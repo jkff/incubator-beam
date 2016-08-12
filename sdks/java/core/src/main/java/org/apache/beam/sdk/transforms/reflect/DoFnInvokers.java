@@ -18,16 +18,16 @@
 package org.apache.beam.sdk.transforms.reflect;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.NamingStrategy;
 import net.bytebuddy.description.field.FieldDescription;
@@ -35,16 +35,24 @@ import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.modifier.FieldManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.description.type.TypeList;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.dynamic.scaffold.subclass.ConstructorStrategy;
+import net.bytebuddy.implementation.ExceptionMethod;
+import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.MethodCall;
+import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
+import net.bytebuddy.implementation.bind.annotation.TargetMethodAnnotationDrivenBinder;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.Throw;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
+import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
+import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
@@ -53,13 +61,15 @@ import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.matcher.ElementMatchers;
+import org.apache.beam.sdk.coders.CannotProvideCoderException;
+import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.coders.CoderRegistry;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.DoFn.FinishBundle;
 import org.apache.beam.sdk.transforms.DoFn.ProcessElement;
-import org.apache.beam.sdk.transforms.DoFn.Setup;
-import org.apache.beam.sdk.transforms.DoFn.StartBundle;
-import org.apache.beam.sdk.transforms.DoFn.Teardown;
 import org.apache.beam.sdk.util.UserCodeException;
+import org.apache.beam.sdk.values.TypeDescriptor;
+
+import com.google.common.reflect.TypeToken;
 
 /** Dynamically generates {@link DoFnInvoker} instances for invoking a {@link DoFn}. */
 public class DoFnInvokers {
@@ -126,6 +136,38 @@ public class DoFnInvokers {
     return constructor;
   }
 
+  /** Default implementation of {@link DoFn.SplitRestriction}, for delegation by bytebuddy. */
+  public static class DefaultSplitRestriction {
+    /** Doesn't split the restriction. */
+    @SuppressWarnings("unused")
+    public static <InputT, RestrictionT> List<RestrictionT> invokeSplitRestriction(
+        InputT element, RestrictionT restriction, int numParts) {
+      return Collections.singletonList(restriction);
+    }
+  }
+
+  /** Default implementation of {@link DoFn.SplitRestriction}, for delegation by bytebuddy. */
+  public static class DefaultRestrictionCoder {
+    private static final CoderRegistry CODER_REGISTRY = new CoderRegistry();
+
+    static {
+      CODER_REGISTRY.registerStandardCoders();
+    }
+
+    private final TypeToken<?> restrictionType;
+
+    DefaultRestrictionCoder(TypeToken<?> restrictionType) {
+      this.restrictionType = restrictionType;
+    }
+
+    /** Doesn't split the restriction. */
+    @SuppressWarnings({"unused", "unchecked"})
+    public <RestrictionT> Coder<RestrictionT> invokeGetRestrictionCoder()
+        throws CannotProvideCoderException {
+      return (Coder) CODER_REGISTRY.getCoder(TypeDescriptor.of(restrictionType.getType()));
+    }
+  }
+
   /** Generates a {@link DoFnInvoker} class for the given {@link DoFnSignature}. */
   private static Class<? extends DoFnInvoker<?, ?>> generateInvokerClass(DoFnSignature signature) {
     Class<? extends DoFn> fnClass = signature.fnClass();
@@ -153,25 +195,33 @@ public class DoFnInvokers {
             .method(ElementMatchers.named("invokeProcessElement"))
             .intercept(new ProcessElementDelegation(signature.processElement()))
             .method(ElementMatchers.named("invokeStartBundle"))
-            .intercept(
-                signature.startBundle() == null
-                    ? new NoopMethodImplementation()
-                    : new BundleMethodDelegation(signature.startBundle()))
+            .intercept(delegateOrNoop(signature.startBundle()))
             .method(ElementMatchers.named("invokeFinishBundle"))
-            .intercept(
-                signature.finishBundle() == null
-                    ? new NoopMethodImplementation()
-                    : new BundleMethodDelegation(signature.finishBundle()))
+            .intercept(delegateOrNoop(signature.finishBundle()))
             .method(ElementMatchers.named("invokeSetup"))
-            .intercept(
-                signature.setup() == null
-                    ? new NoopMethodImplementation()
-                    : new LifecycleMethodDelegation(signature.setup()))
+            .intercept(delegateOrNoop(signature.setup()))
             .method(ElementMatchers.named("invokeTeardown"))
+            .intercept(delegateOrNoop(signature.teardown()))
+            .method(ElementMatchers.named("invokeGetInitialRestriction"))
+            .intercept(delegateWithDowncastOrThrow(signature.getInitialRestriction()))
+            .method(ElementMatchers.named("invokeSplitRestriction"))
             .intercept(
-                signature.teardown() == null
-                    ? new NoopMethodImplementation()
-                    : new LifecycleMethodDelegation(signature.teardown()));
+                (signature.getSplitRestriction() == null)
+                    ? MethodDelegation.to(DefaultSplitRestriction.class)
+                    : new DowncastingParametersMethodDelegation(
+                        signature.getSplitRestriction().targetMethod()))
+            .method(ElementMatchers.named("invokeGetRestrictionCoder"))
+            .intercept(
+                signature.processElement().isSplittable()
+                    ? ((signature.getRestrictionCoder() == null)
+                        ? MethodDelegation.to(
+                            new DefaultRestrictionCoder(
+                                signature.getInitialRestriction().restrictionT()))
+                        : new DowncastingParametersMethodDelegation(
+                            signature.getRestrictionCoder().targetMethod()))
+                    : ExceptionMethod.throwing(UnsupportedOperationException.class))
+            .method(ElementMatchers.named("invokeNewTracker"))
+            .intercept(delegateWithDowncastOrThrow(signature.newTracker()));
 
     DynamicType.Unloaded<?> unloaded = builder.make();
 
@@ -184,34 +234,22 @@ public class DoFnInvokers {
     return res;
   }
 
-  /** Implements an invoker method by doing nothing and immediately returning void. */
-  private static class NoopMethodImplementation implements Implementation {
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(final Target implementationTarget) {
-      return new ByteCodeAppender() {
-        @Override
-        public Size apply(
-            MethodVisitor methodVisitor,
-            Context implementationContext,
-            MethodDescription instrumentedMethod) {
-          StackManipulation manipulation = MethodReturn.VOID;
-          StackManipulation.Size size = manipulation.apply(methodVisitor, implementationContext);
-          return new Size(size.getMaximalSize(), instrumentedMethod.getStackSize());
-        }
-      };
-    }
+  /** Delegates to the given method if available, or does nothing. */
+  private static Implementation delegateOrNoop(DoFnSignature.DoFnMethod method) {
+    return (method == null)
+        ? FixedValue.originType()
+        : new SimpleMethodDelegation(method.targetMethod());
   }
 
-  /**
-   * Base class for implementing an invoker method by delegating to a method of the target {@link
-   * DoFn}.
-   */
-  private abstract static class MethodDelegation implements Implementation {
+  /** Delegates to the given method if available, or throws UnsupportedOperationException. */
+  private static Implementation delegateWithDowncastOrThrow(DoFnSignature.DoFnMethod method) {
+    return (method == null)
+        ? ExceptionMethod.throwing(UnsupportedOperationException.class)
+        : new DowncastingParametersMethodDelegation(method.targetMethod());
+  }
+
+  /** Implements an invoker method by delegating to a method of the target {@link DoFn}. */
+  private abstract static class DoFnMethodDelegation implements Implementation {
     FieldDescription delegateField;
 
     @Override
@@ -260,26 +298,30 @@ public class DoFnInvokers {
    * Implements the invoker's {@link DoFnInvoker#invokeProcessElement} method by delegating to the
    * {@link DoFn.ProcessElement} method.
    */
-  private static final class ProcessElementDelegation extends MethodDelegation {
-    private static final Map<DoFnSignature.ProcessElementMethod.Parameter, MethodDescription>
+  private static final class ProcessElementDelegation extends DoFnMethodDelegation {
+    private static final Map<DoFnSignature.Parameter, MethodDescription>
         EXTRA_CONTEXT_FACTORY_METHODS;
 
     static {
       try {
-        Map<DoFnSignature.ProcessElementMethod.Parameter, MethodDescription> methods =
-            new EnumMap<>(DoFnSignature.ProcessElementMethod.Parameter.class);
+        Map<DoFnSignature.Parameter, MethodDescription> methods =
+            new EnumMap<>(DoFnSignature.Parameter.class);
         methods.put(
-            DoFnSignature.ProcessElementMethod.Parameter.BOUNDED_WINDOW,
+            DoFnSignature.Parameter.BOUNDED_WINDOW,
             new MethodDescription.ForLoadedMethod(
                 DoFn.ExtraContextFactory.class.getMethod("window")));
         methods.put(
-            DoFnSignature.ProcessElementMethod.Parameter.INPUT_PROVIDER,
+            DoFnSignature.Parameter.INPUT_PROVIDER,
             new MethodDescription.ForLoadedMethod(
                 DoFn.ExtraContextFactory.class.getMethod("inputProvider")));
         methods.put(
-            DoFnSignature.ProcessElementMethod.Parameter.OUTPUT_RECEIVER,
+            DoFnSignature.Parameter.OUTPUT_RECEIVER,
             new MethodDescription.ForLoadedMethod(
                 DoFn.ExtraContextFactory.class.getMethod("outputReceiver")));
+        methods.put(
+            DoFnSignature.Parameter.RESTRICTION_TRACKER,
+            new MethodDescription.ForLoadedMethod(
+                DoFn.ExtraContextFactory.class.getMethod("restrictionTracker")));
         EXTRA_CONTEXT_FACTORY_METHODS = Collections.unmodifiableMap(methods);
       } catch (Exception e) {
         throw new RuntimeException(
@@ -310,11 +352,18 @@ public class DoFnInvokers {
       parameters.add(MethodVariableAccess.REFERENCE.loadOffset(1));
       // Push the extra arguments in their actual order.
       StackManipulation pushExtraContextFactory = MethodVariableAccess.REFERENCE.loadOffset(2);
-      for (DoFnSignature.ProcessElementMethod.Parameter param : signature.extraParameters()) {
+      for (DoFnSignature.Parameter param : signature.extraParameters()) {
         parameters.add(
             new StackManipulation.Compound(
                 pushExtraContextFactory,
-                MethodInvocation.invoke(EXTRA_CONTEXT_FACTORY_METHODS.get(param))));
+                MethodInvocation.invoke(EXTRA_CONTEXT_FACTORY_METHODS.get(param)),
+                // ExtraContextFactory.restrictionTracker() returns a RestrictionTracker,
+                // but the @ProcessElement method expects a concrete subtype of it.
+                // Insert a downcast.
+                (param == DoFnSignature.Parameter.RESTRICTION_TRACKER)
+                    ? TypeCasting.to(
+                        new TypeDescription.ForLoadedType(signature.trackerT().getRawType()))
+                    : StackManipulation.Trivial.INSTANCE));
       }
 
       return new StackManipulation.Compound(
@@ -322,66 +371,80 @@ public class DoFnInvokers {
           new StackManipulation.Compound(parameters),
           // Invoke the target method
           wrapWithUserCodeException(
-              MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod)),
-          // Return from the instrumented method
-          MethodReturn.VOID);
+              new StackManipulation.Compound(
+                  MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
+                  // Return from the instrumented @ProcessElement method:
+                  // if it returns void, then return null (meaning don't resume),
+                  // otherwise return the ProcessContinuation it returned.
+                  signature.hasReturnValue()
+                      ? MethodReturn.returning(targetMethod.getReturnType().asErasure())
+                      : new StackManipulation.Compound(
+                          NullConstant.INSTANCE, MethodReturn.REFERENCE))));
     }
   }
 
   /**
-   * Implements {@link DoFnInvoker#invokeStartBundle} or {@link DoFnInvoker#invokeFinishBundle} by
-   * delegating respectively to the {@link StartBundle} and {@link FinishBundle} methods.
+   * Delegates to the given method, wrapping the call into a UserCodeException and optionally
+   * reparing parameters.
    */
-  private static final class BundleMethodDelegation extends MethodDelegation {
-    private final DoFnSignature.BundleMethod signature;
+  private static class SimpleMethodDelegation extends DoFnMethodDelegation {
+    private final Method method;
 
-    private BundleMethodDelegation(@Nullable DoFnSignature.BundleMethod signature) {
-      this.signature = signature;
+    protected SimpleMethodDelegation(Method method) {
+      this.method = method;
     }
 
     @Override
     protected StackManipulation invokeTargetMethod(MethodDescription instrumentedMethod) {
       MethodDescription targetMethod =
           new MethodCall.MethodLocator.ForExplicitMethod(
-                  new MethodDescription.ForLoadedMethod(checkNotNull(signature).targetMethod()))
+                  new MethodDescription.ForLoadedMethod(method))
               .resolve(instrumentedMethod);
       return new StackManipulation.Compound(
-          // Push the parameters
-          MethodVariableAccess.REFERENCE.loadOffset(1),
+          pushArgumentsOfInstrumentedMethod(targetMethod),
           // Invoke the target method
           wrapWithUserCodeException(
-              MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod)),
-          MethodReturn.VOID);
+              new StackManipulation.Compound(
+                  MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
+                  // Return from the instrumented method
+                  TargetMethodAnnotationDrivenBinder.TerminationHandler.Returning.INSTANCE.resolve(
+                      Assigner.DEFAULT, instrumentedMethod, targetMethod))));
+    }
+
+    protected StackManipulation pushArgumentsOfInstrumentedMethod(MethodDescription targetMethod) {
+      return MethodVariableAccess.allArgumentsOf(targetMethod);
     }
   }
 
   /**
-   * Implements {@link DoFnInvoker#invokeSetup} or {@link DoFnInvoker#invokeTeardown} by delegating
-   * respectively to the {@link Setup} and {@link Teardown} methods.
+   * Passes parameters to the delegated method by downcasting each parameter of non-primitive type
+   * to its expected type.
    */
-  private static final class LifecycleMethodDelegation extends MethodDelegation {
-    private final DoFnSignature.LifecycleMethod signature;
-
-    private LifecycleMethodDelegation(@Nullable DoFnSignature.LifecycleMethod signature) {
-      this.signature = signature;
+  private static class DowncastingParametersMethodDelegation extends SimpleMethodDelegation {
+    protected DowncastingParametersMethodDelegation(Method method) {
+      super(method);
     }
 
     @Override
-    protected StackManipulation invokeTargetMethod(MethodDescription instrumentedMethod) {
-      MethodDescription targetMethod =
-          new MethodCall.MethodLocator.ForExplicitMethod(
-                  new MethodDescription.ForLoadedMethod(checkNotNull(signature).targetMethod()))
-              .resolve(instrumentedMethod);
-      return new StackManipulation.Compound(
-          wrapWithUserCodeException(
-              MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod)),
-          MethodReturn.VOID);
+    protected StackManipulation pushArgumentsOfInstrumentedMethod(MethodDescription targetMethod) {
+      List<StackManipulation> pushParameters = new ArrayList<>();
+      TypeList.Generic paramTypes = targetMethod.getParameters().asTypeList();
+      for (int i = 0; i < paramTypes.size(); i++) {
+        TypeDescription.Generic paramT = paramTypes.get(i);
+        pushParameters.add(MethodVariableAccess.of(paramT).loadOffset(i + 1));
+        if (!paramT.isPrimitive()) {
+          pushParameters.add(TypeCasting.to(paramT));
+        }
+      }
+      return new StackManipulation.Compound(pushParameters);
     }
   }
 
   /**
    * Wraps a given stack manipulation in a try catch block. Any exceptions thrown within the try are
    * wrapped with a {@link UserCodeException}.
+   *
+   * <p>Assumes that the stack manipulation contains a method return at the end.
    */
   private static StackManipulation wrapWithUserCodeException(final StackManipulation tryBody) {
     final MethodDescription createUserCodeException;
@@ -404,7 +467,6 @@ public class DoFnInvokers {
         Label tryBlockStart = new Label();
         Label tryBlockEnd = new Label();
         Label catchBlockStart = new Label();
-        Label catchBlockEnd = new Label();
 
         String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
         mv.visitTryCatchBlock(tryBlockStart, tryBlockEnd, catchBlockStart, throwableName);
@@ -412,7 +474,6 @@ public class DoFnInvokers {
         // The try block attempts to perform the expected operations, then jumps to success
         mv.visitLabel(tryBlockStart);
         Size trySize = tryBody.apply(mv, implementationContext);
-        mv.visitJumpInsn(Opcodes.GOTO, catchBlockEnd);
         mv.visitLabel(tryBlockEnd);
 
         // The handler wraps the exception, and then throws.
@@ -430,18 +491,6 @@ public class DoFnInvokers {
         Size catchSize =
             new Compound(MethodInvocation.invoke(createUserCodeException), Throw.INSTANCE)
                 .apply(mv, implementationContext);
-
-        mv.visitLabel(catchBlockEnd);
-        // The frame contents after the try/catch block is the same
-        // as it was before.
-        mv.visitFrame(
-            Opcodes.F_SAME,
-            // No local variables
-            0,
-            new Object[] {},
-            // No new stack variables
-            0,
-            new Object[] {});
 
         return new Size(
             trySize.getSizeImpact(),

@@ -81,6 +81,7 @@ public class DirectRunner
               .put(GroupByKey.class, new DirectGroupByKeyOverrideFactory())
               .put(TestStream.class, new DirectTestStreamFactory())
               .put(Write.Bound.class, new WriteWithShardingFactory())
+              .put(ParDo.Bound.class, new ParDoOverrideFactory())
               .build();
 
   /**

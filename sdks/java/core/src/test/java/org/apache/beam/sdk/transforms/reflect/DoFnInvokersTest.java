@@ -22,6 +22,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.junit.Before;
@@ -77,6 +78,11 @@ public class DoFnInvokersTest {
           @Override
           public DoFn.OutputReceiver<String> outputReceiver() {
             return mockOutputReceiver;
+          }
+
+          @Override
+          public <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker() {
+            throw new UnsupportedOperationException("TODO");
           }
         };
   }

@@ -17,12 +17,20 @@
  */
 package org.apache.beam.sdk.transforms.reflect;
 
-import com.google.auto.value.AutoValue;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.DoFn.ProcessContinuation;
+import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
+import org.apache.beam.sdk.values.PCollection;
+
+import com.google.auto.value.AutoValue;
+import com.google.common.reflect.TypeToken;
+
+
+import javax.annotation.Nullable;
 
 /**
  * Describes the signature of a {@link DoFn}, in particular, which features it uses, which extra
@@ -32,65 +40,131 @@ import org.apache.beam.sdk.transforms.DoFn;
  */
 @AutoValue
 public abstract class DoFnSignature {
+  /** Class of the original {@link DoFn} from which this signature was produced. */
   public abstract Class<? extends DoFn> fnClass();
 
+  /** Whether this {@link DoFn} does a bounded amount of work per element. */
+  public abstract PCollection.IsBounded isBounded();
+
+  /** Details about this {@link DoFn}'s {@link DoFn.ProcessElement} method. */
   public abstract ProcessElementMethod processElement();
 
+  /** Details about this {@link DoFn}'s {@link DoFn.StartBundle} method. */
   @Nullable
   public abstract BundleMethod startBundle();
 
+  /** Details about this {@link DoFn}'s {@link DoFn.FinishBundle} method. */
   @Nullable
   public abstract BundleMethod finishBundle();
 
+  /** Details about this {@link DoFn}'s {@link DoFn.Setup} method. */
   @Nullable
   public abstract LifecycleMethod setup();
 
+  /** Details about this {@link DoFn}'s {@link DoFn.Teardown} method. */
   @Nullable
   public abstract LifecycleMethod teardown();
 
+  /** Details about this {@link DoFn}'s {@link DoFn.GetInitialRestriction} method. */
+  @Nullable
+  public abstract GetInitialRestrictionMethod getInitialRestriction();
+
+  /** Details about this {@link DoFn}'s {@link DoFn.SplitRestriction} method. */
+  @Nullable
+  public abstract SplitRestrictionMethod getSplitRestriction();
+
+  /** Details about this {@link DoFn}'s {@link DoFn.GetRestrictionCoder} method. */
+  @Nullable
+  public abstract GetRestrictionCoderMethod getRestrictionCoder();
+
+  /** Details about this {@link DoFn}'s {@link DoFn.NewTracker} method. */
+  @Nullable
+  public abstract NewTrackerMethod newTracker();
+
   static DoFnSignature create(
       Class<? extends DoFn> fnClass,
+      PCollection.IsBounded isBounded,
       ProcessElementMethod processElement,
       @Nullable BundleMethod startBundle,
       @Nullable BundleMethod finishBundle,
       @Nullable LifecycleMethod setup,
-      @Nullable LifecycleMethod teardown) {
+      @Nullable LifecycleMethod teardown,
+      @Nullable GetInitialRestrictionMethod getInitialRestriction,
+      @Nullable SplitRestrictionMethod splitRestriction,
+      @Nullable GetRestrictionCoderMethod getRestrictionCoder,
+      @Nullable NewTrackerMethod newTracker) {
     return new AutoValue_DoFnSignature(
         fnClass,
+        isBounded,
         processElement,
         startBundle,
         finishBundle,
         setup,
-        teardown);
+        teardown,
+        getInitialRestriction,
+        splitRestriction,
+        getRestrictionCoder,
+        newTracker);
+  }
+
+  /** A method delegated to a annotated method of an underlying {@link DoFn}. */
+  public interface DoFnMethod {
+    /** The annotated method itself. */
+    Method targetMethod();
+  }
+
+  /** A type of optional parameter of the {@link DoFn.ProcessElement} method. */
+  public enum Parameter {
+    BOUNDED_WINDOW,
+    INPUT_PROVIDER,
+    OUTPUT_RECEIVER,
+    RESTRICTION_TRACKER
   }
 
   /** Describes a {@link DoFn.ProcessElement} method. */
   @AutoValue
-  public abstract static class ProcessElementMethod {
-    enum Parameter {
-      BOUNDED_WINDOW,
-      INPUT_PROVIDER,
-      OUTPUT_RECEIVER
-    }
-
+  public abstract static class ProcessElementMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
     public abstract Method targetMethod();
 
+    /** Types of optional parameters of the annotated method, in the order they appear. */
     public abstract List<Parameter> extraParameters();
 
-    static ProcessElementMethod create(Method targetMethod, List<Parameter> extraParameters) {
+    /** Concrete type of the {@link RestrictionTracker} parameter, if present. */
+    @Nullable
+    abstract TypeToken<?> trackerT();
+
+    /** Whether this {@link DoFn} returns a {@link ProcessContinuation} or void. */
+    public abstract boolean hasReturnValue();
+
+    static ProcessElementMethod create(
+        Method targetMethod,
+        List<Parameter> extraParameters,
+        TypeToken<?> trackerT,
+        boolean hasReturnValue) {
       return new AutoValue_DoFnSignature_ProcessElementMethod(
-          targetMethod, Collections.unmodifiableList(extraParameters));
+          targetMethod, Collections.unmodifiableList(extraParameters), trackerT, hasReturnValue);
     }
 
-    /** @return true if the reflected {@link DoFn} uses a Single Window. */
+    /** Whether this {@link DoFn} uses a Single Window. */
     public boolean usesSingleWindow() {
       return extraParameters().contains(Parameter.BOUNDED_WINDOW);
+    }
+
+    /**
+     * Whether this {@link DoFn} is <a href="https://s.apache.org/splittable-do-fn">splittable</a>.
+     */
+    public boolean isSplittable() {
+      return extraParameters().contains(Parameter.RESTRICTION_TRACKER);
     }
   }
 
   /** Describes a {@link DoFn.StartBundle} or {@link DoFn.FinishBundle} method. */
   @AutoValue
-  public abstract static class BundleMethod {
+  public abstract static class BundleMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
     public abstract Method targetMethod();
 
     static BundleMethod create(Method targetMethod) {
@@ -100,11 +174,77 @@ public abstract class DoFnSignature {
 
   /** Describes a {@link DoFn.Setup} or {@link DoFn.Teardown} method. */
   @AutoValue
-  public abstract static class LifecycleMethod {
+  public abstract static class LifecycleMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
     public abstract Method targetMethod();
 
     static LifecycleMethod create(Method targetMethod) {
       return new AutoValue_DoFnSignature_LifecycleMethod(targetMethod);
+    }
+  }
+
+  /** Describes a {@link DoFn.GetInitialRestriction} method. */
+  @AutoValue
+  public abstract static class GetInitialRestrictionMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
+    public abstract Method targetMethod();
+
+    /** Type of the returned restriction. */
+    abstract TypeToken<?> restrictionT();
+
+    static GetInitialRestrictionMethod create(Method targetMethod, TypeToken<?> restrictionT) {
+      return new AutoValue_DoFnSignature_GetInitialRestrictionMethod(targetMethod, restrictionT);
+    }
+  }
+
+  /** Describes a {@link DoFn.SplitRestriction} method. */
+  @AutoValue
+  public abstract static class SplitRestrictionMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
+    public abstract Method targetMethod();
+
+    /** Type of the restriction taken and returned. */
+    abstract TypeToken<?> restrictionT();
+
+    static SplitRestrictionMethod create(Method targetMethod, TypeToken<?> restrictionT) {
+      return new AutoValue_DoFnSignature_SplitRestrictionMethod(targetMethod, restrictionT);
+    }
+  }
+
+  /** Describes a {@link DoFn.NewTracker} method. */
+  @AutoValue
+  public abstract static class NewTrackerMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
+    public abstract Method targetMethod();
+
+    /** Type of the input restriction. */
+    abstract TypeToken<?> restrictionT();
+
+    /** Type of the returned {@link RestrictionTracker}. */
+    abstract TypeToken<?> trackerT();
+
+    static NewTrackerMethod create(
+        Method targetMethod, TypeToken<?> restrictionT, TypeToken<?> trackerT) {
+      return new AutoValue_DoFnSignature_NewTrackerMethod(targetMethod, restrictionT, trackerT);
+    }
+  }
+
+  /** Describes a {@link DoFn.GetRestrictionCoder} method. */
+  @AutoValue
+  public abstract static class GetRestrictionCoderMethod implements DoFnMethod {
+    /** The annotated method itself. */
+    @Override
+    public abstract Method targetMethod();
+
+    /** Type of the returned {@link Coder}. */
+    abstract TypeToken<?> coderT();
+
+    static GetRestrictionCoderMethod create(Method targetMethod, TypeToken<?> coderT) {
+      return new AutoValue_DoFnSignature_GetRestrictionCoderMethod(targetMethod, coderT);
     }
   }
 }

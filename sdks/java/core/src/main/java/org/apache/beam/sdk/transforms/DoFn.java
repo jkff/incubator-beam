@@ -29,19 +29,24 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.HashMap;
 import java.util.Map;
+import javax.annotation.Nullable;
+import org.joda.time.Duration;
+import org.joda.time.Instant;
+import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.Combine.CombineFn;
 import org.apache.beam.sdk.transforms.OldDoFn.DelegatingAggregator;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.HasDisplayData;
 import org.apache.beam.sdk.transforms.reflect.DoFnInvoker;
+import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
+import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.joda.time.Duration;
-import org.joda.time.Instant;
 
 /**
  * The argument to {@link ParDo} providing the code to use to process
@@ -306,6 +311,8 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
      * A placeholder for testing purposes.
      */
     OutputReceiver<OutputT> outputReceiver();
+
+    <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker();
   }
 
   /** A placeholder for testing handling of output types during {@link DoFn} reflection. */
@@ -335,6 +342,11 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
     public OutputReceiver<OutputT> outputReceiver() {
       return null;
     }
+
+    @Override
+    public <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker() {
+      return null;
+    }
   }
 
   /////////////////////////////////////////////////////////////////////////////
@@ -343,6 +355,7 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
   /**
    * Annotation for the method to use to prepare an instance for processing bundles of elements. The
    * method annotated with this must satisfy the following constraints
+   *
    * <ul>
    *   <li>It must have zero arguments.
    * </ul>
@@ -372,14 +385,57 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
   public @interface StartBundle {}
 
   /**
-   * Annotation for the method to use for processing elements. A subclass of
-   * {@link DoFn} must have a method with this annotation satisfying
-   * the following constraints in order for it to be executable:
+   * Annotation for the method to use for processing elements. A subclass of {@link DoFn} must have
+   * a method with this annotation.
+   *
+   * <p>The signature of this method must satisfy the following constraints:
+   *
    * <ul>
-   *   <li>It must have at least one argument.
-   *   <li>Its first argument must be a {@link DoFn.ProcessContext}.
-   *   <li>Its remaining argument, if any, must be {@link BoundedWindow}.
+   * <li>Its first argument must be a {@link DoFn.ProcessContext}.
+   * <li>Its remaining arguments, if any, must be either {@link BoundedWindow} or a subtype of
+   *     {@link RestrictionTracker}. Each of these must appear at most once.
+   * <li>The {@link BoundedWindow} argument corresponds to the window of the current element. If
+   *     absent, a runner may perform additional optimizations.
+   * <li>If the {@link RestrictionTracker} argument is present, this {@link DoFn} is treated as <a
+   *     href="https://s.apache.org/splittable-do-fn">splittable</a> and there are additional
+   *     constraints on related methods {@link GetInitialRestriction}, {@link SplitRestriction},
+   *     {@link NewTracker}, {@link GetRestrictionCoder}, as well as the class-level annotations
+   *     {@link Bounded} and {@link Unbounded}.
+   * <li>If this {@link DoFn} is splittable, the {@link ProcessElement} method <i>may</i> return a
+   *     {@link ProcessContinuation} to indicate whether there is more work to be done for the
+   *     current element.
    * </ul>
+   *
+   * <h2>Splittable DoFn's</h2>
+   *
+   * A {@link DoFn} is <i>splittable</i> if its {@link ProcessElement} method has a parameter whose
+   * type is a subtype of {@link RestrictionTracker}. This is an advanced feature and an
+   * overwhelming majority of users will never need to write a splittable {@link DoFn}. Right now
+   * the implementation of this feature is in progress and it's not ready for any usage.
+   *
+   * <p>See <a href="https://s.apache.org/splittable-do-fn">the proposal</a> for an overview of the
+   * involved concepts (<i>splittable DoFn</i>, <i>restriction</i>, <i>restriction tracker</i>).
+   *
+   * <p>If a {@link DoFn} is splittable, the following constraints must be respected:
+   *
+   * <ul>
+   * <li>It <i>must</i> define a {@link GetInitialRestriction} method.
+   * <li>It <i>may</i> define a {@link SplitRestriction} method.
+   * <li>It <i>must</i> define a {@link NewTracker} method returning the same type as the type of
+   *     the {@link RestrictionTracker} argument of {@link ProcessElement}, which in turn must be a
+   *     subtype of {@code RestrictionTracker<R>} where {@code R} is the restriction type returned
+   *     by {@link GetInitialRestriction}.
+   * <li>It <i>must</i> define a {@link GetRestrictionCoder} method.
+   * <li>The type of restrictions used by all of these methods must be the same.
+   * <li>The {@link DoFn} itself <i>may</i> be annotated with {@link Bounded} or {@link Unbounded},
+   *     but not both at the same time. If it's not annotated with either of these, it's assumed to
+   *     be {@link Bounded} if its {@link ProcessElement} method returns {@code void} and {@link
+   *     Unbounded} if it returns a {@link ProcessContinuation}.
+   * </ul>
+   *
+   * A non-splittable {@link DoFn} <i>must not</i> define any of these methods.
+   *
+   * <p>More documentation will be added when the feature becomes ready for general usage.
    */
   @Documented
   @Retention(RetentionPolicy.RUNTIME)
@@ -412,6 +468,140 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
   @Retention(RetentionPolicy.RUNTIME)
   @Target(ElementType.METHOD)
   public @interface Teardown {
+  }
+
+  /**
+   * Annotation for the method that maps an element to an initial restriction for a <a
+   * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
+   *
+   * <p>Signature: {@code RestrictionT getInitialRestriction(InputT element);}
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.METHOD)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface GetInitialRestriction {}
+
+  /**
+   * Annotation for the method that returns the coder to use for the restriction of a <a
+   * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
+   *
+   * <p>Signature: {@code Coder<RestrictionT> getRestrictionCoder();}
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.METHOD)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface GetRestrictionCoder {}
+
+  /**
+   * Annotation for the method that splits restriction of a <a
+   * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn} into multiple parts to
+   * be processed in parallel.
+   *
+   * <p>Signature: {@code List<RestrictionT> splitRestriction(RestrictionT restriction, int
+   * numParts);}
+   *
+   * <p>{@code numParts} is a hint as to the number of parts into which the restriction should be
+   * split. The method is allowed to respect the hint or to ignore it and produce any number of
+   * parts. 0 means "no hint, choose a reasonable value".
+   *
+   * <p>Optional: if this method is omitted, the restriction will not be split (equivalent to
+   * defining the method and returning {@code Collections.singletonList(restriction)}).
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.METHOD)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface SplitRestriction {}
+
+  /**
+   * Annotation for the method that creates a new {@link RestrictionTracker} for the restriction of
+   * a <a href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
+   *
+   * <p>Signature: {@code MyRestrictionTracker newTracker(RestrictionT restriction);} where {@code
+   * MyRestrictionTracker} must be a subtype of {@code RestrictionTracker<RestrictionT>}.
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.METHOD)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface NewTracker {}
+
+  /**
+   * Annotation on a <a href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}
+   * specifying that the {@link DoFn} performs a bounded amount of work per input element, so
+   * applying it to a bounded {@link PCollection} will produce also a bounded {@link PCollection}.
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.TYPE)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface Bounded {}
+
+  /**
+   * Annotation on a <a href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}
+   * specifying that the {@link DoFn} performs an unbounded amount of work per input element, so
+   * applying it to a bounded {@link PCollection} will produce an unbounded {@link PCollection}.
+   */
+  @Documented
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.TYPE)
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public @interface Unbounded {}
+
+  /**
+   * When used as a return value of {@link ProcessElement}, indicates whether there is more work to
+   * be done for the current element.
+   */
+  @Experimental(Kind.SPLITTABLE_DO_FN)
+  public static class ProcessContinuation {
+    /** Indicates that there is no more work to be done for the current element. */
+    public static ProcessContinuation stop() {
+      return null;
+    }
+
+    /** Indicates that there is more work to be done for the current element. */
+    public static ProcessContinuation resume() {
+      return new ProcessContinuation(Duration.ZERO, null);
+    }
+
+    private final Duration resumeDelay;
+    @Nullable private final Instant futureOutputWatermark;
+
+    private ProcessContinuation(Duration resumeDelay, @Nullable Instant futureOutputWatermark) {
+      this.resumeDelay = resumeDelay;
+      this.futureOutputWatermark = futureOutputWatermark;
+    }
+
+    /**
+     * A minimum duration that should elapse between the end of this {@link ProcessElement} call and
+     * the {@link ProcessElement} call continuing processing of the same element. By default, zero.
+     */
+    public Duration getResumeDelay() {
+      return resumeDelay;
+    }
+
+    /**
+     * A lower bound on timestamps of the output that will be emitted by future {@link
+     * ProcessElement} calls continuing processing of the current element.
+     *
+     * <p>By default, equivalent to timestamp of the input element.
+     */
+    @Nullable
+    public Instant getFutureOutputWatermark() {
+      return futureOutputWatermark;
+    }
+
+    /** Builder method to set the value of {@link #getResumeDelay()}. */
+    public ProcessContinuation withResumeDelay(Duration resumeDelay) {
+      return new ProcessContinuation(resumeDelay, futureOutputWatermark);
+    }
+
+    /** Builder method to set the value of {@link #getFutureOutputWatermark()}. */
+    public ProcessContinuation withFutureOutputWatermark(Instant futureOutputWatermark) {
+      return new ProcessContinuation(resumeDelay, futureOutputWatermark);
+    }
   }
 
   /**

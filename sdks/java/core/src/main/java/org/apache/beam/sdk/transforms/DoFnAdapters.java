@@ -24,6 +24,7 @@ import org.apache.beam.sdk.transforms.reflect.DoFnInvoker;
 import org.apache.beam.sdk.transforms.reflect.DoFnInvokers;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
+import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.values.PCollectionView;
@@ -35,8 +36,8 @@ import org.joda.time.Instant;
 /**
  * Utility class containing adapters for running a {@link DoFn} as an {@link OldDoFn}.
  *
- * @deprecated This class will go away when we start running {@link DoFn}'s directly (using
- * {@link DoFnInvoker}) rather than via {@link OldDoFn}.
+ * @deprecated This class will go away when we start running {@link DoFn}'s directly (using {@link
+ *     DoFnInvoker}) rather than via {@link OldDoFn}.
  */
 @Deprecated
 public class DoFnAdapters {
@@ -62,6 +63,18 @@ public class DoFnAdapters {
       return new WindowDoFnAdapter<>(fn);
     } else {
       return new SimpleDoFnAdapter<>(fn);
+    }
+  }
+
+  /**
+   * If the fn was created using {@link #toOldDoFn}, returns the original {@link DoFn}. Otherwise,
+   * returns {@code null}.
+   */
+  public static <InputT, OutputT> DoFn<InputT, OutputT> getDoFn(OldDoFn<InputT, OutputT> fn) {
+    if (fn instanceof SimpleDoFnAdapter) {
+      return ((SimpleDoFnAdapter<InputT, OutputT>) fn).fn;
+    } else {
+      return null;
     }
   }
 
@@ -198,6 +211,11 @@ public class DoFnAdapters {
     public DoFn.OutputReceiver<OutputT> outputReceiver() {
       throw new UnsupportedOperationException("outputReceiver() exists only for testing");
     }
+
+    @Override
+    public <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker() {
+      throw new UnsupportedOperationException("This is a non-splittable DoFn");
+    }
   }
 
   /**
@@ -274,6 +292,11 @@ public class DoFnAdapters {
     @Override
     public DoFn.OutputReceiver<OutputT> outputReceiver() {
       throw new UnsupportedOperationException("outputReceiver() exists only for testing");
+    }
+
+    @Override
+    public <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker() {
+      throw new UnsupportedOperationException("This is a non-splittable DoFn");
     }
   }
 }

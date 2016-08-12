@@ -96,7 +96,7 @@ public class DoFnSignaturesTest {
         "Integer is not a valid context parameter for method "
             + getClass().getName()
             + "#badExtraProcessContext(ProcessContext, Integer)"
-            + ". Should be one of [BoundedWindow]");
+            + ". Should be one of [BoundedWindow, RestrictionTracker<?>]");
 
     DoFnSignatures.analyzeProcessElementMethod(
         TypeToken.of(FakeDoFn.class),
@@ -114,7 +114,9 @@ public class DoFnSignaturesTest {
   @Test
   public void testBadReturnType() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage(getClass().getName() + "#badReturnType() must have a void return type");
+    thrown.expectMessage(
+        getClass().getName()
+            + "#badReturnType() must have a void or ProcessContinuation return type");
 
     DoFnSignatures.analyzeProcessElementMethod(
         TypeToken.of(FakeDoFn.class),
