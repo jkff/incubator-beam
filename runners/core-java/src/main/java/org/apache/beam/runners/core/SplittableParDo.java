@@ -57,10 +57,13 @@ import org.joda.time.Instant;
 import java.util.UUID;
 
 /**
- * A transform that executes a <a href="https://s.apache.org/splittable-do-fn">splittable</a> {@link
- * DoFn} by expanding it into a network of simpler transforms: pair with restriction, split
- * restrictions, assign unique key and group by it (in order to get access to per-key state and
- * timers), then process.
+ * A utility transform that executes a <a
+ * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn} by expanding it into a
+ * network of simpler transforms: pair with restriction, split restrictions, assign unique key and
+ * group by it (in order to get access to per-key state and timers), then process.
+ *
+ * <p>This transform is intended as a helper for internal use by runners when implementing {@code
+ * ParDo.of(splittable DoFn)}, but not for direct use by pipeline writers.
  */
 public class SplittableParDo<
         InputT, OutputT, RestrictionT, TrackerT extends RestrictionTracker<RestrictionT>>
@@ -156,7 +159,8 @@ public class SplittableParDo<
    * necessary.
    *
    * <p>TODO: This uses deprecated OldDoFn since DoFn does not provide access to state/timer
-   * internals.
+   * internals. This should be rewritten to use the <a href="https://s.apache.org/beam-state">State
+   * and Timers API</a> once it is available.
    */
   private static class ProcessFn<
           InputT, RestrictionT, OutputT, TrackerT extends RestrictionTracker<RestrictionT>>

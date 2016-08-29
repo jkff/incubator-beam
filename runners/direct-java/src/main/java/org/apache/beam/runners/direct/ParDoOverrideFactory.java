@@ -44,38 +44,30 @@ class ParDoOverrideFactory implements PTransformOverrideFactory {
     return new SplittableParDo(that.getName(), fn, new DirectGroupByKeyIntoKeyedWorkItems());
   }
 
-  /**
-   * The Direct Runner specific implementation of {@link GroupByKeyIntoKeyedWorkItems}.
-   *
-   * @param <InputT>
-   * @param <RestrictionT>
-   */
-  private static class DirectGroupByKeyIntoKeyedWorkItems<InputT, RestrictionT>
-      implements GroupByKeyIntoKeyedWorkItems<String, KV<InputT, RestrictionT>> {
+  /** The Direct Runner specific implementation of {@link GroupByKeyIntoKeyedWorkItems}. */
+  private static class DirectGroupByKeyIntoKeyedWorkItems<InputT>
+      implements GroupByKeyIntoKeyedWorkItems<String, InputT> {
     @Override
-    public PTransform<
-            PCollection<KV<String, KV<InputT, RestrictionT>>>,
-            PCollection<KeyedWorkItem<String, KV<InputT, RestrictionT>>>>
-        forInputCoder(Coder<KV<InputT, RestrictionT>> inputCoder) {
+    public PTransform<PCollection<KV<String, InputT>>, PCollection<KeyedWorkItem<String, InputT>>>
+        forInputCoder(Coder<InputT> inputCoder) {
       return new Transform<>(inputCoder);
     }
 
-    static class Transform<InputT, RestrictionT>
+    static class Transform<InputT>
         extends PTransform<
-            PCollection<KV<String, KV<InputT, RestrictionT>>>,
-            PCollection<KeyedWorkItem<String, KV<InputT, RestrictionT>>>> {
-      private final Coder<KV<InputT, RestrictionT>> inputCoder;
+            PCollection<KV<String, InputT>>, PCollection<KeyedWorkItem<String, InputT>>> {
+      private final Coder<InputT> inputCoder;
 
-      private Transform(Coder<KV<InputT, RestrictionT>> inputCoder) {
+      private Transform(Coder<InputT> inputCoder) {
         this.inputCoder = inputCoder;
       }
 
       @Override
-      public PCollection<KeyedWorkItem<String, KV<InputT, RestrictionT>>> apply(
-          PCollection<KV<String, KV<InputT, RestrictionT>>> input) {
+      public PCollection<KeyedWorkItem<String, InputT>> apply(
+          PCollection<KV<String, InputT>> input) {
         return input
-            .apply(new ReifyTimestampsAndWindows<String, KV<InputT, RestrictionT>>())
-            .apply(new DirectGroupByKey.DirectGroupByKeyOnly<String, KV<InputT, RestrictionT>>())
+            .apply(new ReifyTimestampsAndWindows<String, InputT>())
+            .apply(new DirectGroupByKey.DirectGroupByKeyOnly<String, InputT>())
             .setCoder(
                 KeyedWorkItemCoder.of(
                     StringUtf8Coder.of(),
