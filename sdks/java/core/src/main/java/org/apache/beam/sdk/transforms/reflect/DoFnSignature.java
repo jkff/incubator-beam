@@ -17,20 +17,17 @@
  */
 package org.apache.beam.sdk.transforms.reflect;
 
+import com.google.auto.value.AutoValue;
+import com.google.common.reflect.TypeToken;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
+import javax.annotation.Nullable;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.DoFn.ProcessContinuation;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.values.PCollection;
-
-import com.google.auto.value.AutoValue;
-import com.google.common.reflect.TypeToken;
-
-
-import javax.annotation.Nullable;
 
 /**
  * Describes the signature of a {@link DoFn}, in particular, which features it uses, which extra

@@ -19,6 +19,7 @@ package org.apache.beam.sdk.transforms.reflect;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.google.common.reflect.TypeToken;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -52,7 +53,6 @@ import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.Throw;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
-import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
@@ -68,8 +68,6 @@ import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.DoFn.ProcessElement;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.apache.beam.sdk.values.TypeDescriptor;
-
-import com.google.common.reflect.TypeToken;
 
 /** Dynamically generates {@link DoFnInvoker} instances for invoking a {@link DoFn}. */
 public class DoFnInvokers {
@@ -301,6 +299,7 @@ public class DoFnInvokers {
   private static final class ProcessElementDelegation extends DoFnMethodDelegation {
     private static final Map<DoFnSignature.Parameter, MethodDescription>
         EXTRA_CONTEXT_FACTORY_METHODS;
+    private static final MethodDescription PROCESS_CONTINUATION_STOP_METHOD;
 
     static {
       try {
@@ -326,6 +325,12 @@ public class DoFnInvokers {
       } catch (Exception e) {
         throw new RuntimeException(
             "Failed to locate an ExtraContextFactory method that was expected to exist", e);
+      }
+      try {
+        PROCESS_CONTINUATION_STOP_METHOD =
+            new MethodDescription.ForLoadedMethod(DoFn.ProcessContinuation.class.getMethod("stop"));
+      } catch (NoSuchMethodException e) {
+        throw new RuntimeException("Failed to locate ProcessContinuation.stop()");
       }
     }
 
@@ -379,7 +384,8 @@ public class DoFnInvokers {
                   signature.hasReturnValue()
                       ? MethodReturn.returning(targetMethod.getReturnType().asErasure())
                       : new StackManipulation.Compound(
-                          NullConstant.INSTANCE, MethodReturn.REFERENCE))));
+                          MethodInvocation.invoke(PROCESS_CONTINUATION_STOP_METHOD),
+                          MethodReturn.REFERENCE))));
     }
   }
 

@@ -19,6 +19,8 @@ package org.apache.beam.runners.core;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
+import com.google.common.collect.Iterables;
+import java.util.UUID;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -49,12 +51,7 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
-
-import com.google.common.collect.Iterables;
-
 import org.joda.time.Instant;
-
-import java.util.UUID;
 
 /**
  * A utility transform that executes a <a
@@ -356,17 +353,17 @@ public class SplittableParDo<
       return new DoFn.ExtraContextFactory<InputT, OutputT>() {
         @Override
         public BoundedWindow window() {
-          return null;
+          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
         }
 
         @Override
         public DoFn.InputProvider<InputT> inputProvider() {
-          return null;
+          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
         }
 
         @Override
         public DoFn.OutputReceiver<OutputT> outputReceiver() {
-          return null;
+          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
         }
 
         @Override
@@ -395,7 +392,10 @@ public class SplittableParDo<
     @ProcessElement
     public void processElement(ProcessContext c) {
       for (RestrictionT part :
-          invoker.invokeSplitRestriction(c.element().getKey(), c.element().getValue(), 0)) {
+          invoker.invokeSplitRestriction(
+              c.element().getKey(),
+              c.element().getValue(),
+              SplitRestriction.UNSPECIFIED_NUM_PARTS)) {
         c.output(KV.of(c.element().getKey(), part));
       }
     }

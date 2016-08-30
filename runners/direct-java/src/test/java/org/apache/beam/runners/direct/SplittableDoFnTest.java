@@ -1,5 +1,8 @@
 package org.apache.beam.runners.direct;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import com.google.common.base.Preconditions;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
@@ -15,9 +18,6 @@ import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
-
-import com.google.common.base.Preconditions;
-
 import org.junit.Test;
 
 /**
@@ -42,7 +42,7 @@ public class SplittableDoFnTest {
     private Integer lastClaimedIndex = null;
 
     OffsetRangeTracker(OffsetRange range) {
-      this.range = range;
+      this.range = checkNotNull(range);
     }
 
     @Override
@@ -52,6 +52,11 @@ public class SplittableDoFnTest {
 
     @Override
     public OffsetRange checkpoint() {
+      if (lastClaimedIndex == null) {
+        OffsetRange res = range;
+        range = new OffsetRange(range.from, range.from);
+        return res;
+      }
       OffsetRange res = new OffsetRange(lastClaimedIndex + 1, range.to);
       this.range = new OffsetRange(range.from, lastClaimedIndex + 1);
       return res;

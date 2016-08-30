@@ -20,6 +20,9 @@ package org.apache.beam.sdk.transforms.reflect;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.reflect.TypeParameter;
+import com.google.common.reflect.TypeToken;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -39,10 +42,6 @@ import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 import org.apache.beam.sdk.values.PCollection;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.reflect.TypeParameter;
-import com.google.common.reflect.TypeToken;
 
 /**
  * Parses a {@link DoFn} and computes its {@link DoFnSignature}. See {@link #getOrParseSignature}.
@@ -238,7 +237,7 @@ public class DoFnSignatures {
       checkArgument(
           newTracker == null,
           "%s defines @ProcessElement method %s which is non-splittable, "
-              + "but defines a @RestrictionCoder method %s",
+              + "but defines a @GetRestrictionCoder method %s",
           formatType(fnToken),
           format(processElementMethod),
           format(getRestrictionCoderMethod));

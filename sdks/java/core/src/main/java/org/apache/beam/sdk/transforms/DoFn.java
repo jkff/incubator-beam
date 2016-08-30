@@ -30,8 +30,6 @@ import java.lang.annotation.Target;
 import java.util.HashMap;
 import java.util.Map;
 import javax.annotation.Nullable;
-import org.joda.time.Duration;
-import org.joda.time.Instant;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -47,6 +45,8 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.joda.time.Duration;
+import org.joda.time.Instant;
 
 /**
  * The argument to {@link ParDo} providing the code to use to process
@@ -312,6 +312,10 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
      */
     OutputReceiver<OutputT> outputReceiver();
 
+    /**
+     * If this is a splittable {@link DoFn}, returns the {@link RestrictionTracker} associated with
+     * the current {@link ProcessElement} call.
+     */
     <RestrictionT> RestrictionTracker<RestrictionT> restrictionTracker();
   }
 
@@ -406,12 +410,12 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    *     current element.
    * </ul>
    *
-   * <h2>Splittable DoFn's</h2>
+   * <h2>Splittable DoFn's (WARNING: work in progress, do not use)</h2>
    *
    * A {@link DoFn} is <i>splittable</i> if its {@link ProcessElement} method has a parameter whose
    * type is a subtype of {@link RestrictionTracker}. This is an advanced feature and an
    * overwhelming majority of users will never need to write a splittable {@link DoFn}. Right now
-   * the implementation of this feature is in progress and it's not ready for any usage.
+   * the implementation of this feature is in progress and it's not ready for any use.
    *
    * <p>See <a href="https://s.apache.org/splittable-do-fn">the proposal</a> for an overview of the
    * involved concepts (<i>splittable DoFn</i>, <i>restriction</i>, <i>restriction tracker</i>).
@@ -425,7 +429,7 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    *     the {@link RestrictionTracker} argument of {@link ProcessElement}, which in turn must be a
    *     subtype of {@code RestrictionTracker<R>} where {@code R} is the restriction type returned
    *     by {@link GetInitialRestriction}.
-   * <li>It <i>must</i> define a {@link GetRestrictionCoder} method.
+   * <li>It <i>may</i> define a {@link GetRestrictionCoder} method.
    * <li>The type of restrictions used by all of these methods must be the same.
    * <li>The {@link DoFn} itself <i>may</i> be annotated with {@link Bounded} or {@link Unbounded},
    *     but not both at the same time. If it's not annotated with either of these, it's assumed to
@@ -486,6 +490,8 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    * Annotation for the method that returns the coder to use for the restriction of a <a
    * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
    *
+   * <p>If not defined, a coded will be inferred using standard coder inference rules.
+   *
    * <p>Signature: {@code Coder<RestrictionT> getRestrictionCoder();}
    */
   @Documented
@@ -513,7 +519,13 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
   @Retention(RetentionPolicy.RUNTIME)
   @Target(ElementType.METHOD)
   @Experimental(Kind.SPLITTABLE_DO_FN)
-  public @interface SplitRestriction {}
+  public @interface SplitRestriction {
+    /**
+     * Means: the {@link SplitRestriction} method should choose a reasonable number of parts
+     * to split the restriction into.
+     */
+    int UNSPECIFIED_NUM_PARTS = 0;
+  }
 
   /**
    * Annotation for the method that creates a new {@link RestrictionTracker} for the restriction of
@@ -556,9 +568,11 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    */
   @Experimental(Kind.SPLITTABLE_DO_FN)
   public static class ProcessContinuation {
+    private static final ProcessContinuation STOP = new ProcessContinuation(null, null);
+
     /** Indicates that there is no more work to be done for the current element. */
     public static ProcessContinuation stop() {
-      return null;
+      return STOP;
     }
 
     /** Indicates that there is more work to be done for the current element. */
