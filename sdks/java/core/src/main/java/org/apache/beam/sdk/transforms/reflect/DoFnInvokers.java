@@ -391,7 +391,7 @@ public class DoFnInvokers {
 
   /**
    * Delegates to the given method, wrapping the call into a UserCodeException and optionally
-   * reparing parameters.
+   * downcasting parameters to the proper type.
    */
   private static class SimpleMethodDelegation extends DoFnMethodDelegation {
     private final Method method;

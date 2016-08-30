@@ -20,6 +20,7 @@ package org.apache.beam.runners.core;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.collect.Iterables;
+import java.util.List;
 import java.util.UUID;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.KvCoder;
@@ -186,6 +187,7 @@ public class SplittableParDo<
     private StateTag<Object, ValueState<RestrictionT>> restrictionTag;
 
     private final DoFn<InputT, OutputT> fn;
+
     private transient DoFnInvoker<InputT, OutputT> invoker;
 
     ProcessFn(
@@ -346,17 +348,17 @@ public class SplittableParDo<
       return new DoFn.ExtraContextFactory<InputT, OutputT>() {
         @Override
         public BoundedWindow window() {
-          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
+          throw new IllegalStateException("Unexpected extra context access on a splittable DoFn");
         }
 
         @Override
         public DoFn.InputProvider<InputT> inputProvider() {
-          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
+          throw new IllegalStateException("Unexpected extra context access on a splittable DoFn");
         }
 
         @Override
         public DoFn.OutputReceiver<OutputT> outputReceiver() {
-          throw new UnsupportedOperationException("Splittable DoFn's don't support extra context");
+          throw new IllegalStateException("Unexpected extra context access on a splittable DoFn");
         }
 
         @Override
@@ -384,11 +386,10 @@ public class SplittableParDo<
 
     @ProcessElement
     public void processElement(ProcessContext c) {
-      for (RestrictionT part :
+      List<RestrictionT> parts =
           invoker.invokeSplitRestriction(
-              c.element().getKey(),
-              c.element().getValue(),
-              SplitRestriction.UNSPECIFIED_NUM_PARTS)) {
+              c.element().getKey(), c.element().getValue(), SplitRestriction.UNSPECIFIED_NUM_PARTS);
+      for (RestrictionT part : parts) {
         c.output(KV.of(c.element().getKey(), part));
       }
     }
