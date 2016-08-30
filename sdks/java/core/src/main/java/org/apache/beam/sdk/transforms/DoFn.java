@@ -479,6 +479,8 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
    *
    * <p>Signature: {@code RestrictionT getInitialRestriction(InputT element);}
+   *
+   * TODO: Make the InputT parameter optional.
    */
   @Documented
   @Retention(RetentionPolicy.RUNTIME)
@@ -490,7 +492,7 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    * Annotation for the method that returns the coder to use for the restriction of a <a
    * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
    *
-   * <p>If not defined, a coded will be inferred using standard coder inference rules.
+   * <p>If not defined, a coder will be inferred using standard coder inference rules.
    *
    * <p>Signature: {@code Coder<RestrictionT> getRestrictionCoder();}
    */
@@ -505,8 +507,8 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn} into multiple parts to
    * be processed in parallel.
    *
-   * <p>Signature: {@code List<RestrictionT> splitRestriction(RestrictionT restriction, int
-   * numParts);}
+   * <p>Signature: {@code List<RestrictionT> splitRestriction(
+   *   InputT element, RestrictionT restriction, int numParts);}
    *
    * <p>{@code numParts} is a hint as to the number of parts into which the restriction should be
    * split. The method is allowed to respect the hint or to ignore it and produce any number of
@@ -514,6 +516,8 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
    *
    * <p>Optional: if this method is omitted, the restriction will not be split (equivalent to
    * defining the method and returning {@code Collections.singletonList(restriction)}).
+   *
+   * TODO: Make the InputT and numParts parameters optional.
    */
   @Documented
   @Retention(RetentionPolicy.RUNTIME)

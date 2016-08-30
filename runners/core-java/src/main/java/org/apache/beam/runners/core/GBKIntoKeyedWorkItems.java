@@ -17,7 +17,6 @@
  */
 package org.apache.beam.runners.core;
 
-import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.util.KeyedWorkItem;
@@ -28,13 +27,11 @@ import org.apache.beam.sdk.values.PCollection;
  * Interface for creating a runner-specific {@link GroupByKey}-like {@link PTransform} that produces
  * {@link KeyedWorkItem} in order to give the downstream transform access to timers.
  */
-public interface GroupByKeyIntoKeyedWorkItems<KeyT, InputT> {
-  /**
-   * Returns a new transform that groups its input collection by key and produces
-   * {@link KeyedWorkItem}.
-   *
-   * @param inputCoder Coder to use for {@code InputT}.
-   */
-  PTransform<PCollection<KV<KeyT, InputT>>, PCollection<KeyedWorkItem<KeyT, InputT>>> forInputCoder(
-      Coder<InputT> inputCoder);
+public class GBKIntoKeyedWorkItems<KeyT, InputT>
+    extends PTransform<PCollection<KV<KeyT, InputT>>, PCollection<KeyedWorkItem<KeyT, InputT>>> {
+  @Override
+  public PCollection<KeyedWorkItem<KeyT, InputT>> apply(PCollection<KV<KeyT, InputT>> input) {
+    return PCollection.createPrimitiveOutputInternal(
+        input.getPipeline(), input.getWindowingStrategy(), input.isBounded());
+  }
 }

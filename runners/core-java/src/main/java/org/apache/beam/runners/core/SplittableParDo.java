@@ -65,23 +65,16 @@ import org.joda.time.Instant;
 public class SplittableParDo<
         InputT, OutputT, RestrictionT, TrackerT extends RestrictionTracker<RestrictionT>>
     extends PTransform<PCollection<InputT>, PCollection<OutputT>> {
-  private final GroupByKeyIntoKeyedWorkItems<String, KV<InputT, RestrictionT>> groupByKeyTransform;
   private final DoFn<InputT, OutputT> fn;
 
   /**
-   * Creates the transform for the given original {@link ParDo} and {@link DoFn}, using a
-   * runner-specific implementation of {@link GroupByKeyIntoKeyedWorkItems}.
+   * Creates the transform for the given original {@link ParDo} and {@link DoFn}.
    *
    * @param name Name for the transform
    * @param fn The splittable {@link DoFn} inside the original {@link ParDo} transform.
-   * @param groupByKeyTransform A runner-specific {@link GroupByKeyIntoKeyedWorkItems}.
    */
-  public SplittableParDo(
-      String name,
-      DoFn<InputT, OutputT> fn,
-      GroupByKeyIntoKeyedWorkItems<String, KV<InputT, RestrictionT>> groupByKeyTransform) {
+  public SplittableParDo(String name, DoFn<InputT, OutputT> fn) {
     super(name);
-    this.groupByKeyTransform = groupByKeyTransform;
     this.fn = fn;
   }
 
@@ -101,7 +94,7 @@ public class SplittableParDo<
         .apply("Split restriction", ParDo.of(new SplitRestrictionFn<InputT, RestrictionT>(fn)))
         .apply(
             "Assign unique key", ParDo.of(new AssignRandomUniqueKeyFn<KV<InputT, RestrictionT>>()))
-        .apply("Group by key", groupByKeyTransform.forInputCoder(splitCoder))
+        .apply("Group by key", new GBKIntoKeyedWorkItems<String, KV<InputT, RestrictionT>>())
         .apply(
             "Process",
             ParDo.of(
@@ -109,7 +102,7 @@ public class SplittableParDo<
                     fn,
                     input.getCoder(),
                     input.getWindowingStrategy().getWindowFn().windowCoder())))
-        .setIsBoundedInternal(isFnBounded);
+        .setIsBoundedInternal(input.isBounded().and(isFnBounded));
   }
 
   /**

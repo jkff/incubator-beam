@@ -38,14 +38,17 @@ public class DoFnSignaturesTest {
   @SuppressWarnings({"unused"})
   private void missingProcessContext() {}
 
+  private static DoFnSignatures.ErrorReporter errors() {
+    return new DoFnSignatures.ErrorReporter(null, "root");
+  }
+
   @Test
   public void testMissingProcessContext() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage(
-        getClass().getName()
-            + "#missingProcessContext() must take a ProcessContext<> as its first argument");
+    thrown.expectMessage("Must take ProcessContext<> as its first argument");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         getClass().getDeclaredMethod("missingProcessContext"),
         TypeToken.of(Integer.class),
@@ -58,11 +61,10 @@ public class DoFnSignaturesTest {
   @Test
   public void testBadProcessContextType() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage(
-        getClass().getName()
-            + "#badProcessContext(String) must take a ProcessContext<> as its first argument");
+    thrown.expectMessage("Must take ProcessContext<> as its first argument");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         getClass().getDeclaredMethod("badProcessContext", String.class),
         TypeToken.of(Integer.class),
@@ -75,11 +77,10 @@ public class DoFnSignaturesTest {
   @Test
   public void testBadExtraContext() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage(
-        getClass().getName()
-            + "#badExtraContext(Context, int) must have a single argument of type Context");
+    thrown.expectMessage("Must take a single argument of type Context");
 
     DoFnSignatures.analyzeBundleMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         getClass().getDeclaredMethod("badExtraContext", DoFn.Context.class, int.class),
         TypeToken.of(Integer.class),
@@ -93,12 +94,11 @@ public class DoFnSignaturesTest {
   public void testBadExtraProcessContextType() throws Exception {
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
-        "Integer is not a valid context parameter for method "
-            + getClass().getName()
-            + "#badExtraProcessContext(ProcessContext, Integer)"
-            + ". Should be one of [BoundedWindow, RestrictionTracker<?>]");
+        "Integer is not a valid context parameter. "
+            + "Should be one of [BoundedWindow, RestrictionTracker<?>]");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         getClass()
             .getDeclaredMethod("badExtraProcessContext", DoFn.ProcessContext.class, Integer.class),
@@ -114,11 +114,10 @@ public class DoFnSignaturesTest {
   @Test
   public void testBadReturnType() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage(
-        getClass().getName()
-            + "#badReturnType() must have a void or ProcessContinuation return type");
+    thrown.expectMessage("Must return void or ProcessContinuation");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         getClass().getDeclaredMethod("badReturnType"),
         TypeToken.of(Integer.class),
@@ -141,6 +140,7 @@ public class DoFnSignaturesTest {
                 DoFn.InputProvider.class,
                 DoFn.OutputReceiver.class);
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         method,
         TypeToken.of(Integer.class),
@@ -194,14 +194,11 @@ public class DoFnSignaturesTest {
 
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
-        "Wrong type of OutputReceiver parameter "
-            + "for method "
-            + getClass().getName()
-            + "#badGenericTwoArgs(ProcessContext, InputProvider, OutputReceiver): "
-            + "OutputReceiver<Integer>, should be "
-            + "OutputReceiver<String>");
+        "Wrong type of OutputReceiver parameter: "
+            + "OutputReceiver<Integer>, should be OutputReceiver<String>");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         method,
         TypeToken.of(Integer.class),
@@ -226,13 +223,11 @@ public class DoFnSignaturesTest {
 
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
-        "Wrong type of OutputReceiver parameter for method "
-            + getClass().getName()
-            + "#badGenericWildCards(ProcessContext, InputProvider, OutputReceiver): "
-            + "OutputReceiver<? super Integer>, should be "
-            + "OutputReceiver<String>");
+        "Wrong type of OutputReceiver parameter: "
+            + "OutputReceiver<? super Integer>, should be OutputReceiver<String>");
 
     DoFnSignatures.analyzeProcessElementMethod(
+        errors(),
         TypeToken.of(FakeDoFn.class),
         method,
         TypeToken.of(Integer.class),
@@ -252,11 +247,8 @@ public class DoFnSignaturesTest {
   public void testBadTypeVariables() throws Exception {
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
-        "Wrong type of OutputReceiver parameter for method "
-            + BadTypeVariables.class.getName()
-            + "#badTypeVariables(ProcessContext, InputProvider, OutputReceiver): "
-            + "OutputReceiver<InputT>, should be "
-            + "OutputReceiver<OutputT>");
+        "Wrong type of OutputReceiver parameter: "
+            + "OutputReceiver<InputT>, should be OutputReceiver<OutputT>");
 
     DoFnSignatures.INSTANCE.getOrParseSignature(BadTypeVariables.class);
   }
