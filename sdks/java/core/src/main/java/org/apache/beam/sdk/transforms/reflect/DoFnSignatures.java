@@ -124,8 +124,7 @@ public class DoFnSignatures {
     if (finishBundleMethod != null) {
       ErrorReporter finishBundleErrors = errors.forMethod("@FinishBundle", finishBundleMethod);
       builder.setFinishBundle(
-          analyzeBundleMethod(
-              finishBundleErrors, fnToken, finishBundleMethod, inputT, outputT));
+          analyzeBundleMethod(finishBundleErrors, fnToken, finishBundleMethod, inputT, outputT));
     }
 
     if (setupMethod != null) {
@@ -135,8 +134,7 @@ public class DoFnSignatures {
 
     if (teardownMethod != null) {
       builder.setTeardown(
-          analyzeLifecycleMethod(
-              errors.forMethod("@Teardown", teardownMethod), teardownMethod));
+          analyzeLifecycleMethod(errors.forMethod("@Teardown", teardownMethod), teardownMethod));
     }
 
     DoFnSignature.GetInitialRestrictionMethod getInitialRestriction = null;
@@ -563,24 +561,18 @@ public class DoFnSignatures {
   }
 
   static class ErrorReporter {
-    @Nullable private final ErrorReporter parent;
     private final String label;
 
-    ErrorReporter(@Nullable ErrorReporter parent, String label) {
-      this.parent = parent;
-      this.label = label;
+    ErrorReporter(@Nullable ErrorReporter root, String label) {
+      this.label = (root == null) ? label : String.format("%s [%s]", root.label, label);
     }
 
-    public ErrorReporter forMethod(String annotation, Method method) {
+    ErrorReporter forMethod(String annotation, Method method) {
       return new ErrorReporter(this, String.format("%s method %s", annotation, format(method)));
     }
 
-    private String labelChain() {
-      return ((parent == null) ? "" : (parent.labelChain() + " ")) + "[" + label + "]";
-    }
-
-    public void throwIllegalArgument(String message, Object... args) {
-      throw new IllegalArgumentException(String.format(labelChain() + " " + message, args));
+    void throwIllegalArgument(String message, Object... args) {
+      throw new IllegalArgumentException(label + " " + String.format(message, args));
     }
 
     public void checkArgument(boolean condition, String message, Object... args) {
