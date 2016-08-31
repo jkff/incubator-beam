@@ -63,16 +63,18 @@ public class DoFnSignatures {
 
   /** Analyzes a given {@link DoFn} class and extracts its {@link DoFnSignature}. */
   private static DoFnSignature parseSignature(Class<? extends DoFn> fnClass) {
-    TypeToken<?> inputT = null;
-    TypeToken<?> outputT = null;
+    DoFnSignature.Builder builder = DoFnSignature.builder();
 
-    PCollection.IsBounded isBounded = null;
+    ErrorReporter errors = new ErrorReporter(null, fnClass.getName());
+    errors.checkArgument(DoFn.class.isAssignableFrom(fnClass), "Must be subtype of DoFn");
+    builder.setFnClass(fnClass);
+
+    TypeToken<? extends DoFn> fnToken = TypeToken.of(fnClass);
 
     // Extract the input and output type, and whether the fn is bounded.
-    TypeToken<? extends DoFn> fnToken = TypeToken.of(fnClass);
-    ErrorReporter errors = new ErrorReporter(null, fnClass.getName());
-    errors.checkArgument(
-        DoFn.class.isAssignableFrom(fnClass), "Must be subtype of DoFn");
+    PCollection.IsBounded isBounded = null;
+    TypeToken<?> inputT = null;
+    TypeToken<?> outputT = null;
     for (TypeToken<?> supertype : fnToken.getTypes()) {
       if (supertype.getRawType().isAnnotationPresent(DoFn.Bounded.class)) {
         errors.checkArgument(isBounded == null, "Both @Bounded and @Unbounded specified");
@@ -107,57 +109,73 @@ public class DoFnSignatures {
         findAnnotatedMethod(errors, DoFn.GetRestrictionCoder.class, fnClass, false);
     Method newTrackerMethod = findAnnotatedMethod(errors, DoFn.NewTracker.class, fnClass, false);
 
-    ErrorReporter processElementErrors =
-        errors.nest("@ProcessElement method %s", format(processElementMethod));
+    ErrorReporter processElementErrors = errors.forMethod("@ProcessElement", processElementMethod);
     DoFnSignature.ProcessElementMethod processElement =
         analyzeProcessElementMethod(
             processElementErrors, fnToken, processElementMethod, inputT, outputT);
+    builder.setProcessElement(processElement);
 
-    ErrorReporter startBundleErrors =
-        errors.nest("@StartBundle method %s", format(startBundleMethod));
-    DoFnSignature.BundleMethod startBundle =
-        (startBundleMethod == null)
-            ? null
-            : analyzeBundleMethod(startBundleErrors, fnToken, startBundleMethod, inputT, outputT);
-    ErrorReporter finishBundleErrors =
-        errors.nest("@FinishBundle method %s", format(finishBundleMethod));
-    DoFnSignature.BundleMethod finishBundle =
-        (finishBundleMethod == null)
-            ? null
-            : analyzeBundleMethod(finishBundleErrors, fnToken, finishBundleMethod, inputT, outputT);
-    ErrorReporter setupErrors = errors.nest("@Setup method %s", format(setupMethod));
-    DoFnSignature.LifecycleMethod setup =
-        (setupMethod == null) ? null : analyzeLifecycleMethod(setupErrors, setupMethod);
-    ErrorReporter teardownErrors = errors.nest("@Teardown method %s", format(teardownMethod));
-    DoFnSignature.LifecycleMethod teardown =
-        (teardownMethod == null) ? null : analyzeLifecycleMethod(teardownErrors, teardownMethod);
+    if (startBundleMethod != null) {
+      ErrorReporter startBundleErrors = errors.forMethod("@StartBundle", startBundleMethod);
+      builder.setStartBundle(
+          analyzeBundleMethod(startBundleErrors, fnToken, startBundleMethod, inputT, outputT));
+    }
 
-    ErrorReporter getInitialRestrictionErrors =
-        errors.nest("@GetInitialRestriction method %s", format(getInitialRestrictionMethod));
-    DoFnSignature.GetInitialRestrictionMethod getInitialRestriction =
-        (getInitialRestrictionMethod == null)
-            ? null
-            : analyzeGetInitialRestrictionMethod(
-                getInitialRestrictionErrors, fnToken, getInitialRestrictionMethod, inputT);
-    ErrorReporter splitRestrictionErrors =
-        errors.nest("@SplitRestriction method %s", format(splitRestrictionMethod));
-    DoFnSignature.SplitRestrictionMethod splitRestriction =
-        (splitRestrictionMethod == null)
-            ? null
-            : analyzeSplitRestrictionMethod(
-                splitRestrictionErrors, fnToken, splitRestrictionMethod, inputT);
-    ErrorReporter getRestrictionCoderErrors =
-        errors.nest("@GetRestrictionCoder method %s", format(getRestrictionCoderMethod));
-    DoFnSignature.GetRestrictionCoderMethod getRestrictionCoder =
-        (getRestrictionCoderMethod == null)
-            ? null
-            : analyzeGetRestrictionCoderMethod(
-                getRestrictionCoderErrors, fnToken, getRestrictionCoderMethod);
-    ErrorReporter newTrackerErrors = errors.nest("@NewTracker method %s", format(newTrackerMethod));
-    DoFnSignature.NewTrackerMethod newTracker =
-        (newTrackerMethod == null)
-            ? null
-            : analyzeNewTrackerMethod(newTrackerErrors, fnToken, newTrackerMethod);
+    if (finishBundleMethod != null) {
+      ErrorReporter finishBundleErrors = errors.forMethod("@FinishBundle", finishBundleMethod);
+      builder.setFinishBundle(
+          analyzeBundleMethod(
+              finishBundleErrors, fnToken, finishBundleMethod, inputT, outputT));
+    }
+
+    if (setupMethod != null) {
+      builder.setSetup(
+          analyzeLifecycleMethod(errors.forMethod("@Setup", setupMethod), setupMethod));
+    }
+
+    if (teardownMethod != null) {
+      builder.setTeardown(
+          analyzeLifecycleMethod(
+              errors.forMethod("@Teardown", teardownMethod), teardownMethod));
+    }
+
+    DoFnSignature.GetInitialRestrictionMethod getInitialRestriction = null;
+    ErrorReporter getInitialRestrictionErrors = null;
+    if (getInitialRestrictionMethod != null) {
+      getInitialRestrictionErrors =
+          errors.forMethod("@GetInitialRestriction", getInitialRestrictionMethod);
+      builder.setGetInitialRestriction(
+          getInitialRestriction =
+              analyzeGetInitialRestrictionMethod(
+                  getInitialRestrictionErrors, fnToken, getInitialRestrictionMethod, inputT));
+    }
+
+    DoFnSignature.SplitRestrictionMethod splitRestriction = null;
+    if (splitRestrictionMethod != null) {
+      ErrorReporter splitRestrictionErrors =
+          errors.forMethod("@SplitRestriction", splitRestrictionMethod);
+      builder.setSplitRestriction(
+          splitRestriction =
+              analyzeSplitRestrictionMethod(
+                  splitRestrictionErrors, fnToken, splitRestrictionMethod, inputT));
+    }
+
+    DoFnSignature.GetRestrictionCoderMethod getRestrictionCoder = null;
+    if (getRestrictionCoderMethod != null) {
+      ErrorReporter getRestrictionCoderErrors =
+          errors.forMethod("@GetRestrictionCoder", getRestrictionCoderMethod);
+      builder.setGetRestrictionCoder(
+          getRestrictionCoder =
+              analyzeGetRestrictionCoderMethod(
+                  getRestrictionCoderErrors, fnToken, getRestrictionCoderMethod));
+    }
+
+    DoFnSignature.NewTrackerMethod newTracker = null;
+    if (newTrackerMethod != null) {
+      ErrorReporter newTrackerErrors = errors.forMethod("@NewTracker", newTrackerMethod);
+      builder.setNewTracker(
+          newTracker = analyzeNewTrackerMethod(newTrackerErrors, fnToken, newTrackerMethod));
+    }
 
     // Additional validation for splittable DoFn's.
     if (processElement.isSplittable()) {
@@ -234,18 +252,9 @@ public class DoFnSignatures {
           forbiddenMethods.isEmpty(), "Non-splittable, but defines methods: %s", forbiddenMethods);
     }
 
-    return DoFnSignature.create(
-        fnClass,
-        isBounded,
-        processElement,
-        startBundle,
-        finishBundle,
-        setup,
-        teardown,
-        getInitialRestriction,
-        splitRestriction,
-        getRestrictionCoder,
-        newTracker);
+    builder.setIsBounded(isBounded);
+
+    return builder.build();
   }
 
   /**
@@ -516,8 +525,7 @@ public class DoFnSignatures {
     Collection<Method> matches = declaredMethodsWithAnnotation(anno, fnClazz, DoFn.class);
 
     if (matches.size() == 0) {
-      errors.checkArgument(
-          !required, "No method annotated with @%s found", anno.getSimpleName());
+      errors.checkArgument(!required, "No method annotated with @%s found", anno.getSimpleName());
       return null;
     }
 
@@ -563,8 +571,8 @@ public class DoFnSignatures {
       this.label = label;
     }
 
-    public ErrorReporter nest(String label, Object... args) {
-      return new ErrorReporter(this, String.format(label, args));
+    public ErrorReporter forMethod(String annotation, Method method) {
+      return new ErrorReporter(this, String.format("%s method %s", annotation, format(method)));
     }
 
     private String labelChain() {

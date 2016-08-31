@@ -68,7 +68,7 @@ public abstract class DoFnSignature {
 
   /** Details about this {@link DoFn}'s {@link DoFn.SplitRestriction} method. */
   @Nullable
-  public abstract SplitRestrictionMethod getSplitRestriction();
+  public abstract SplitRestrictionMethod splitRestriction();
 
   /** Details about this {@link DoFn}'s {@link DoFn.GetRestrictionCoder} method. */
   @Nullable
@@ -78,30 +78,24 @@ public abstract class DoFnSignature {
   @Nullable
   public abstract NewTrackerMethod newTracker();
 
-  static DoFnSignature create(
-      Class<? extends DoFn> fnClass,
-      PCollection.IsBounded isBounded,
-      ProcessElementMethod processElement,
-      @Nullable BundleMethod startBundle,
-      @Nullable BundleMethod finishBundle,
-      @Nullable LifecycleMethod setup,
-      @Nullable LifecycleMethod teardown,
-      @Nullable GetInitialRestrictionMethod getInitialRestriction,
-      @Nullable SplitRestrictionMethod splitRestriction,
-      @Nullable GetRestrictionCoderMethod getRestrictionCoder,
-      @Nullable NewTrackerMethod newTracker) {
-    return new AutoValue_DoFnSignature(
-        fnClass,
-        isBounded,
-        processElement,
-        startBundle,
-        finishBundle,
-        setup,
-        teardown,
-        getInitialRestriction,
-        splitRestriction,
-        getRestrictionCoder,
-        newTracker);
+  static Builder builder() {
+    return new AutoValue_DoFnSignature.Builder();
+  }
+
+  @AutoValue.Builder
+  abstract static class Builder {
+    abstract Builder setFnClass(Class<? extends DoFn> fnClass);
+    abstract Builder setIsBounded(PCollection.IsBounded isBounded);
+    abstract Builder setProcessElement(ProcessElementMethod processElement);
+    abstract Builder setStartBundle(BundleMethod startBundle);
+    abstract Builder setFinishBundle(BundleMethod finishBundle);
+    abstract Builder setSetup(LifecycleMethod setup);
+    abstract Builder setTeardown(LifecycleMethod teardown);
+    abstract Builder setGetInitialRestriction(GetInitialRestrictionMethod getInitialRestriction);
+    abstract Builder setSplitRestriction(SplitRestrictionMethod splitRestriction);
+    abstract Builder setGetRestrictionCoder(GetRestrictionCoderMethod getRestrictionCoder);
+    abstract Builder setNewTracker(NewTrackerMethod newTracker);
+    abstract DoFnSignature build();
   }
 
   /** A method delegated to a annotated method of an underlying {@link DoFn}. */

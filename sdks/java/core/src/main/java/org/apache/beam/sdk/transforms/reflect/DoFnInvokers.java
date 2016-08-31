@@ -204,10 +204,10 @@ public class DoFnInvokers {
             .intercept(delegateWithDowncastOrThrow(signature.getInitialRestriction()))
             .method(ElementMatchers.named("invokeSplitRestriction"))
             .intercept(
-                (signature.getSplitRestriction() == null)
+                (signature.splitRestriction() == null)
                     ? MethodDelegation.to(DefaultSplitRestriction.class)
                     : new DowncastingParametersMethodDelegation(
-                        signature.getSplitRestriction().targetMethod()))
+                        signature.splitRestriction().targetMethod()))
             .method(ElementMatchers.named("invokeGetRestrictionCoder"))
             .intercept(
                 signature.processElement().isSplittable()
