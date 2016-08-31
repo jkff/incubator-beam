@@ -23,7 +23,6 @@ import com.google.common.collect.Iterables;
 import java.util.List;
 import java.util.UUID;
 import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.OldDoFn;
@@ -41,8 +40,6 @@ import org.apache.beam.sdk.util.KeyedWorkItem;
 import org.apache.beam.sdk.util.TimeDomain;
 import org.apache.beam.sdk.util.TimerInternals;
 import org.apache.beam.sdk.util.WindowedValue;
-import org.apache.beam.sdk.util.WindowingInternals;
-import org.apache.beam.sdk.util.state.StateInternals;
 import org.apache.beam.sdk.util.state.StateNamespace;
 import org.apache.beam.sdk.util.state.StateNamespaces;
 import org.apache.beam.sdk.util.state.StateTag;
@@ -86,7 +83,8 @@ public class SplittableParDo<
         DoFnSignatures.INSTANCE.getOrParseSignature(fn.getClass()).isBounded();
     Coder<RestrictionT> restrictionCoder =
         DoFnInvokers.INSTANCE.newByteBuddyInvoker(fn).invokeGetRestrictionCoder();
-    KvCoder<InputT, RestrictionT> splitCoder = KvCoder.of(input.getCoder(), restrictionCoder);
+    Coder<ElementRestriction<InputT, RestrictionT>> splitCoder =
+        ElementRestrictionCoder.of(input.getCoder(), restrictionCoder);
 
     return input
         .apply(
@@ -95,8 +93,11 @@ public class SplittableParDo<
         .setCoder(splitCoder)
         .apply("Split restriction", ParDo.of(new SplitRestrictionFn<InputT, RestrictionT>(fn)))
         .apply(
-            "Assign unique key", ParDo.of(new AssignRandomUniqueKeyFn<KV<InputT, RestrictionT>>()))
-        .apply("Group by key", new GBKIntoKeyedWorkItems<String, KV<InputT, RestrictionT>>())
+            "Assign unique key",
+            ParDo.of(new AssignRandomUniqueKeyFn<ElementRestriction<InputT, RestrictionT>>()))
+        .apply(
+            "Group by key",
+            new GBKIntoKeyedWorkItems<String, ElementRestriction<InputT, RestrictionT>>())
         .apply(
             "Process",
             ParDo.of(
@@ -123,7 +124,7 @@ public class SplittableParDo<
    * Pairs each input element with its initial restriction using the given splittable {@link DoFn}.
    */
   private static class PairWithRestrictionFn<InputT, OutputT, RestrictionT>
-      extends DoFn<InputT, KV<InputT, RestrictionT>> {
+      extends DoFn<InputT, ElementRestriction<InputT, RestrictionT>> {
     private DoFn<InputT, OutputT> fn;
     private transient DoFnInvoker<InputT, OutputT> invoker;
 
@@ -139,7 +140,7 @@ public class SplittableParDo<
     @ProcessElement
     public void processElement(ProcessContext context) {
       context.output(
-          KV.of(
+          ElementRestriction.of(
               context.element(),
               invoker.<RestrictionT>invokeGetInitialRestriction(context.element())));
     }
@@ -156,7 +157,7 @@ public class SplittableParDo<
    */
   private static class ProcessFn<
           InputT, RestrictionT, OutputT, TrackerT extends RestrictionTracker<RestrictionT>>
-      extends OldDoFn<KeyedWorkItem<String, KV<InputT, RestrictionT>>, OutputT>
+      extends OldDoFn<KeyedWorkItem<String, ElementRestriction<InputT, RestrictionT>>, OutputT>
       implements OldDoFn.RequiresWindowAccess {
     /**
      * The state cell containing a watermark hold for the output of this {@link DoFn}. The hold is
@@ -188,6 +189,7 @@ public class SplittableParDo<
     private StateTag<Object, ValueState<RestrictionT>> restrictionTag;
 
     private final DoFn<InputT, OutputT> fn;
+    private final Coder<? extends BoundedWindow> windowCoder;
 
     private transient DoFnInvoker<InputT, OutputT> invoker;
 
@@ -196,8 +198,9 @@ public class SplittableParDo<
         Coder<InputT> elementCoder,
         Coder<? extends BoundedWindow> windowCoder) {
       this.fn = fn;
+      this.windowCoder = windowCoder;
       elementTag =
-          StateTags.value("element", WindowedValue.getFullCoder(elementCoder, windowCoder));
+          StateTags.value("element", WindowedValue.getFullCoder(elementCoder, this.windowCoder));
     }
 
     @Override
@@ -209,53 +212,46 @@ public class SplittableParDo<
 
     @Override
     public void processElement(final ProcessContext c) {
-      final WindowingInternals<KeyedWorkItem<String, KV<InputT, RestrictionT>>, OutputT> internals =
-          c.windowingInternals();
-      StateInternals<?> stateInternals = internals.stateInternals();
-      TimerInternals timerInternals = internals.timerInternals();
-
+      // Initialize state (element and restriction) depending on whether this is the seed call.
+      // The seed call is the first call for this element, which actually has the element.
+      // Subsequent calls are timer firings and the element has to be retrieved from the state.
+      TimerInternals.TimerData timer = Iterables.getOnlyElement(c.element().timersIterable(), null);
+      boolean isSeedCall = (timer == null);
+      StateNamespace stateNamespace =
+          isSeedCall
+              ? StateNamespaces.window((Coder) windowCoder, c.window())
+              : timer.getNamespace();
       ValueState<WindowedValue<InputT>> elementState =
-          stateInternals.state(StateNamespaces.global(), elementTag);
+          c.windowingInternals().stateInternals().state(stateNamespace, elementTag);
       ValueState<RestrictionT> restrictionState =
-          stateInternals.state(StateNamespaces.global(), restrictionTag);
+          c.windowingInternals().stateInternals().state(stateNamespace, restrictionTag);
       WatermarkHoldState<GlobalWindow> holdState =
-          stateInternals.state(StateNamespaces.global(), watermarkHoldTag);
+          c.windowingInternals().stateInternals().state(stateNamespace, watermarkHoldTag);
 
-      elementState.readLater();
-      restrictionState.readLater();
-
-      final WindowedValue<InputT> element;
-      RestrictionT restriction = restrictionState.read();
-      final boolean wasFirstCall = (restriction == null);
-      if (wasFirstCall) {
-        // This is the first ProcessElement call for this element/restriction.
+      ElementRestriction<WindowedValue<InputT>, RestrictionT> state;
+      if (isSeedCall) {
         // The element and restriction are available in c.element().
-        WindowedValue<KV<InputT, RestrictionT>> windowedValue =
+        WindowedValue<ElementRestriction<InputT, RestrictionT>> windowedValue =
             Iterables.getOnlyElement(c.element().elementsIterable());
-        element = windowedValue.withValue(windowedValue.getValue().getKey());
-        restriction = windowedValue.getValue().getValue();
+        WindowedValue<InputT> element = windowedValue.withValue(windowedValue.getValue().element());
+        elementState.write(element);
+        state = ElementRestriction.of(element, windowedValue.getValue().restriction());
       } else {
         // This is not the first ProcessElement call for this element/restriction - rather,
         // this is a timer firing, so we need to fetch the element and restriction from state.
-        element = elementState.read();
+        elementState.readLater();
+        restrictionState.readLater();
+        state = ElementRestriction.of(elementState.read(), restrictionState.read());
       }
 
-      final TrackerT tracker = invoker.invokeNewTracker(restriction);
+      final TrackerT tracker = invoker.invokeNewTracker(state.restriction());
       @SuppressWarnings("unchecked")
       final RestrictionT[] residual = (RestrictionT[]) new Object[1];
       // TODO: Only let the call run for a limited amount of time, rather than simply
       // producing a limited amount of output.
       DoFn.ProcessContinuation cont =
           invoker.invokeProcessElement(
-              makeContext(c, element, tracker, residual, internals), wrapTracker(tracker));
-
-      if (cont == null) {
-        // All work for this element/restriction is completed. Clear state and release hold.
-        elementState.clear();
-        restrictionState.clear();
-        holdState.clear();
-        return;
-      }
+              makeContext(c, state.element(), tracker, residual), wrapTracker(tracker));
       if (residual[0] == null) {
         // This means the call completed unsolicited, and the context produced by makeContext()
         // did not take a checkpoint. Take one now.
@@ -263,17 +259,22 @@ public class SplittableParDo<
       }
 
       // Save state for resuming.
-      if (wasFirstCall) {
-        elementState.write(element);
+      if (cont == null) {
+        // All work for this element/restriction is completed. Clear state and release hold.
+        elementState.clear();
+        restrictionState.clear();
+        holdState.clear();
+        return;
       }
       restrictionState.write(residual[0]);
       if (cont.getFutureOutputWatermark() != null) {
         holdState.add(cont.getFutureOutputWatermark());
       }
       // Set a timer to continue processing this element.
+      TimerInternals timerInternals = c.windowingInternals().timerInternals();
       timerInternals.setTimer(
           TimerInternals.TimerData.of(
-              StateNamespaces.global(),
+              stateNamespace,
               Instant.now().plus(cont.getResumeDelay()),
               TimeDomain.PROCESSING_TIME));
     }
@@ -282,9 +283,7 @@ public class SplittableParDo<
         final ProcessContext baseContext,
         final WindowedValue<InputT> element,
         final TrackerT tracker,
-        final RestrictionT[] residualRestrictionHolder,
-        final WindowingInternals<KeyedWorkItem<String, KV<InputT, RestrictionT>>, OutputT>
-            internals) {
+        final RestrictionT[] residualRestrictionHolder) {
       return fn.new ProcessContext() {
         // Commit at least once every 10k output records.  This keeps the watermark advancing
         // smoothly, and ensures that not too much work will have to be reprocessed in the event of
@@ -307,13 +306,17 @@ public class SplittableParDo<
         }
 
         public void output(OutputT output) {
-          internals.outputWindowedValue(
-              output, element.getTimestamp(), element.getWindows(), element.getPane());
+          baseContext
+              .windowingInternals()
+              .outputWindowedValue(
+                  output, element.getTimestamp(), element.getWindows(), element.getPane());
           noteOutput();
         }
 
         public void outputWithTimestamp(OutputT output, Instant timestamp) {
-          internals.outputWindowedValue(output, timestamp, element.getWindows(), element.getPane());
+          baseContext
+              .windowingInternals()
+              .outputWindowedValue(output, timestamp, element.getWindows(), element.getPane());
           noteOutput();
         }
 
@@ -372,7 +375,8 @@ public class SplittableParDo<
 
   /** Splits the restriction using the given {@link DoFn.SplitRestriction} method. */
   private static class SplitRestrictionFn<InputT, RestrictionT>
-      extends DoFn<KV<InputT, RestrictionT>, KV<InputT, RestrictionT>> {
+      extends DoFn<
+          ElementRestriction<InputT, RestrictionT>, ElementRestriction<InputT, RestrictionT>> {
     private final DoFn<InputT, ?> fn;
     private transient DoFnInvoker<InputT, ?> invoker;
 
@@ -389,9 +393,11 @@ public class SplittableParDo<
     public void processElement(ProcessContext c) {
       List<RestrictionT> parts =
           invoker.invokeSplitRestriction(
-              c.element().getKey(), c.element().getValue(), SplitRestriction.UNSPECIFIED_NUM_PARTS);
+              c.element().element(),
+              c.element().restriction(),
+              SplitRestriction.UNSPECIFIED_NUM_PARTS);
       for (RestrictionT part : parts) {
-        c.output(KV.of(c.element().getKey(), part));
+        c.output(ElementRestriction.of(c.element().element(), part));
       }
     }
   }
