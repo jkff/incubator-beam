@@ -31,7 +31,6 @@ import java.util.List;
 import java.util.Map;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.NamingStrategy;
-import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.field.FieldDescription;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.modifier.FieldManifestation;
@@ -168,15 +167,6 @@ public class DoFnInvokers {
     }
   }
 
-  private static class UserCodeExceptionWrapper {
-    @Advice.OnMethodExit
-    public void onExit(@Advice.Thrown Throwable thrown) {
-      if (thrown != null) {
-        throw UserCodeException.wrap(thrown);
-      }
-    }
-  }
-
   /** Generates a {@link DoFnInvoker} class for the given {@link DoFnSignature}. */
   private static Class<? extends DoFnInvoker<?, ?>> generateInvokerClass(DoFnSignature signature) {
     Class<? extends DoFn> fnClass = signature.fnClass();
@@ -233,14 +223,6 @@ public class DoFnInvokers {
             .intercept(delegateWithDowncastOrThrow(signature.newTracker()));
 
     DynamicType.Unloaded<?> unloaded = builder.make();
-//    try {
-//      try (FileOutputStream w =
-//          new FileOutputStream("/usr/local/google/home/kirpichov/incubator-beam/foo.class")) {
-//        w.write(unloaded.getBytes());
-//      }
-//    } catch (Exception e) {
-//      e.printStackTrace();
-//    }
 
     @SuppressWarnings("unchecked")
     Class<? extends DoFnInvoker<?, ?>> res =
@@ -416,7 +398,7 @@ public class DoFnInvokers {
   private static class SimpleMethodDelegation extends DoFnMethodDelegation {
     private final Method method;
 
-    protected SimpleMethodDelegation(Method method) {
+    SimpleMethodDelegation(Method method) {
       this.method = method;
     }
 
@@ -449,7 +431,7 @@ public class DoFnInvokers {
    * to its expected type.
    */
   private static class DowncastingParametersMethodDelegation extends SimpleMethodDelegation {
-    protected DowncastingParametersMethodDelegation(Method method) {
+    DowncastingParametersMethodDelegation(Method method) {
       super(method);
     }
 
@@ -472,16 +454,11 @@ public class DoFnInvokers {
 
     /** {@link MethodDescription} for {@link UserCodeException#wrap} */
     private final MethodDescription createUserCodeException;
-    private final String throwableName =
-        new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
 
     private final StackManipulation tryBody;
-    private final MethodDescription instrumentedMethod;
 
-    protected BaseWrapUserCodeException(
-        StackManipulation tryBody, MethodDescription instrumentedMethod) {
+    BaseWrapUserCodeException(StackManipulation tryBody) {
       this.tryBody = tryBody;
-      this.instrumentedMethod = instrumentedMethod;
       try {
         createUserCodeException =
             new MethodDescription.ForLoadedMethod(
@@ -500,6 +477,7 @@ public class DoFnInvokers {
       String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
       mv.visitFrame(Opcodes.F_SAME1, 0, new Object[] {}, 1, new Object[] {throwableName});
     }
+
     protected abstract void visitFrameWithReturnOnStack(MethodVisitor mv);
 
     @Override
@@ -552,21 +530,18 @@ public class DoFnInvokers {
       final TypeDescription returnType,
       MethodDescription instrumentedMethod) {
     if (TypeDescription.VOID.equals(returnType)) {
-      return new BaseWrapUserCodeException(tryBody, instrumentedMethod) {
+      return new BaseWrapUserCodeException(tryBody) {
         @Override
         protected void visitFrameWithReturnOnStack(MethodVisitor mv) {
-          mv.visitFrame(Opcodes.F_SAME,
-              0, new Object[] {},
-              0, new Object[] {});
+          mv.visitFrame(Opcodes.F_SAME, 0, new Object[] {}, 0, new Object[] {});
         }
       };
     } else {
-      return new BaseWrapUserCodeException(tryBody, instrumentedMethod) {
+      return new BaseWrapUserCodeException(tryBody) {
         @Override
         protected void visitFrameWithReturnOnStack(MethodVisitor mv) {
-          mv.visitFrame(Opcodes.F_SAME1,
-              0, new Object[] {},
-              1, new Object[] {returnType.getInternalName()});
+          mv.visitFrame(
+              Opcodes.F_SAME1, 0, new Object[] {}, 1, new Object[] {returnType.getInternalName()});
         }
       };
     }
