@@ -92,6 +92,7 @@ public class SplittableParDo<
             ParDo.of(new PairWithRestrictionFn<InputT, OutputT, RestrictionT>(fn)))
         .setCoder(splitCoder)
         .apply("Split restriction", ParDo.of(new SplitRestrictionFn<InputT, RestrictionT>(fn)))
+        .setCoder(splitCoder)
         .apply(
             "Assign unique key",
             ParDo.of(new AssignRandomUniqueKeyFn<ElementRestriction<InputT, RestrictionT>>()))
