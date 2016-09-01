@@ -29,28 +29,16 @@ import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
  * referred to as the bound {@link DoFn}.
  */
 public interface DoFnInvoker<InputT, OutputT> {
-  /**
-   * Invoke the {@link DoFn.Setup} method on the bound {@link DoFn}.
-   */
+  /** Invoke the {@link DoFn.Setup} method on the bound {@link DoFn}. */
   void invokeSetup();
 
-  /**
-   * Invoke the {@link DoFn.StartBundle} method on the bound {@link DoFn}.
-   *
-   * @param c The {@link DoFn.Context} to invoke the fn with.
-   */
+  /** Invoke the {@link DoFn.StartBundle} method on the bound {@link DoFn}. */
   void invokeStartBundle(DoFn<InputT, OutputT>.Context c);
 
-  /**
-   * Invoke the {@link DoFn.FinishBundle} method on the bound {@link DoFn}.
-   *
-   * @param c The {@link DoFn.Context} to invoke the fn with.
-   */
+  /** Invoke the {@link DoFn.FinishBundle} method on the bound {@link DoFn}. */
   void invokeFinishBundle(DoFn<InputT, OutputT>.Context c);
 
-  /**
-   * Invoke the {@link DoFn.Teardown} method on the bound {@link DoFn}.
-   */
+  /** Invoke the {@link DoFn.Teardown} method on the bound {@link DoFn}. */
   void invokeTeardown();
 
   /**
@@ -58,15 +46,23 @@ public interface DoFnInvoker<InputT, OutputT> {
    *
    * @param c The {@link DoFn.ProcessContext} to invoke the fn with.
    * @param extra Factory for producing extra parameter objects (such as window), if necessary.
+   * @return The {@link DoFn.ProcessContinuation} returned by the underlying method,
+   *   or {@link DoFn.ProcessContinuation#stop()} if it returns {@code void}.
    */
   DoFn.ProcessContinuation invokeProcessElement(
       DoFn<InputT, OutputT>.ProcessContext c, DoFn.ExtraContextFactory<InputT, OutputT> extra);
 
+  /** Invoke the {@link DoFn.GetInitialRestriction} method on the bound {@link DoFn}. */
   <RestrictionT> RestrictionT invokeGetInitialRestriction(InputT element);
+
+  /** Invoke the {@link DoFn.GetRestrictionCoder} method on the bound {@link DoFn}. */
   <RestrictionT> Coder<RestrictionT> invokeGetRestrictionCoder();
+
+  /** Invoke the {@link DoFn.SplitRestriction} method on the bound {@link DoFn}. */
   <RestrictionT> List<RestrictionT> invokeSplitRestriction(
       InputT element, RestrictionT restriction, int numParts);
 
+  /** Invoke the {@link DoFn.NewTracker} method on the bound {@link DoFn}. */
   <RestrictionT, TrackerT extends RestrictionTracker<RestrictionT>>
   TrackerT invokeNewTracker(RestrictionT restriction);
 }

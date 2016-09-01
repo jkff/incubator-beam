@@ -20,6 +20,7 @@ package org.apache.beam.sdk.transforms.reflect;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.reflect.TypeToken;
+import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -60,6 +61,8 @@ import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
+import net.bytebuddy.jar.asm.Type;
+import net.bytebuddy.jar.asm.commons.LocalVariablesSorter;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
@@ -222,6 +225,14 @@ public class DoFnInvokers {
             .intercept(delegateWithDowncastOrThrow(signature.newTracker()));
 
     DynamicType.Unloaded<?> unloaded = builder.make();
+    try {
+      try (FileOutputStream w =
+          new FileOutputStream("/usr/local/google/home/kirpichov/incubator-beam/foo.class")) {
+        w.write(unloaded.getBytes());
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
 
     @SuppressWarnings("unchecked")
     Class<? extends DoFnInvoker<?, ?>> res =
@@ -376,16 +387,17 @@ public class DoFnInvokers {
           new StackManipulation.Compound(parameters),
           // Invoke the target method
           wrapWithUserCodeException(
-              new StackManipulation.Compound(
-                  MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
-                  // Return from the instrumented @ProcessElement method:
-                  // if it returns void, then return null (meaning don't resume),
-                  // otherwise return the ProcessContinuation it returned.
-                  signature.hasReturnValue()
-                      ? MethodReturn.returning(targetMethod.getReturnType().asErasure())
-                      : new StackManipulation.Compound(
-                          MethodInvocation.invoke(PROCESS_CONTINUATION_STOP_METHOD),
-                          MethodReturn.REFERENCE))));
+              MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
+              targetMethod.getReturnType().asErasure(),
+              instrumentedMethod),
+          // Return from the instrumented @ProcessElement method:
+          // if it returns void, then return null (meaning don't resume),
+          // otherwise return the ProcessContinuation it returned.
+          signature.hasReturnValue()
+              ? MethodReturn.returning(targetMethod.getReturnType().asErasure())
+              : new StackManipulation.Compound(
+                  MethodInvocation.invoke(PROCESS_CONTINUATION_STOP_METHOD),
+                  MethodReturn.REFERENCE));
     }
   }
 
@@ -410,11 +422,13 @@ public class DoFnInvokers {
           pushArgumentsOfInstrumentedMethod(targetMethod),
           // Invoke the target method
           wrapWithUserCodeException(
-              new StackManipulation.Compound(
-                  MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
-                  // Return from the instrumented method
-                  TargetMethodAnnotationDrivenBinder.TerminationHandler.Returning.INSTANCE.resolve(
-                      Assigner.DEFAULT, instrumentedMethod, targetMethod))));
+              MethodDelegationBinder.MethodInvoker.Simple.INSTANCE.invoke(targetMethod),
+              targetMethod.getReturnType().asErasure(),
+              instrumentedMethod),
+          new StackManipulation.Compound(
+              // Return from the instrumented method
+              TargetMethodAnnotationDrivenBinder.TerminationHandler.Returning.INSTANCE.resolve(
+                  Assigner.DEFAULT, instrumentedMethod, targetMethod)));
     }
 
     protected StackManipulation pushArgumentsOfInstrumentedMethod(MethodDescription targetMethod) {
@@ -449,10 +463,11 @@ public class DoFnInvokers {
   /**
    * Wraps a given stack manipulation in a try catch block. Any exceptions thrown within the try are
    * wrapped with a {@link UserCodeException}.
-   *
-   * <p>Assumes that the stack manipulation contains a method return at the end.
    */
-  private static StackManipulation wrapWithUserCodeException(final StackManipulation tryBody) {
+  private static StackManipulation wrapWithUserCodeException(
+      final StackManipulation tryBody,
+      final TypeDescription returnType,
+      final MethodDescription instrumentedMethod) {
     final MethodDescription createUserCodeException;
     try {
       createUserCodeException =
@@ -469,10 +484,21 @@ public class DoFnInvokers {
       }
 
       @Override
-      public Size apply(MethodVisitor mv, Implementation.Context implementationContext) {
+      public Size apply(MethodVisitor originalMV, Implementation.Context implementationContext) {
+        LocalVariablesSorter mv =
+            new LocalVariablesSorter(
+                instrumentedMethod.getActualModifiers(),
+                instrumentedMethod.getDescriptor(),
+                originalMV);
+        Label wrapStart = new Label();
+        Label wrapEnd = new Label();
         Label tryBlockStart = new Label();
         Label tryBlockEnd = new Label();
         Label catchBlockStart = new Label();
+        Label catchBlockEnd = new Label();
+
+        mv.visitLabel(wrapStart);
+        int returnVarIndex = mv.newLocal(Type.getType(returnType.getDescriptor()));
 
         String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
         mv.visitTryCatchBlock(tryBlockStart, tryBlockEnd, catchBlockStart, throwableName);
@@ -480,26 +506,43 @@ public class DoFnInvokers {
         // The try block attempts to perform the expected operations, then jumps to success
         mv.visitLabel(tryBlockStart);
         Size trySize = tryBody.apply(mv, implementationContext);
+        if (returnType != TypeDescription.VOID) {
+          mv.visitVarInsn(Opcodes.ASTORE, returnVarIndex);
+        }
+        // After try body, should have same locals and empty stack.
+        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 0, new Object[] {});
+        mv.visitJumpInsn(Opcodes.GOTO, catchBlockEnd);
         mv.visitLabel(tryBlockEnd);
 
         // The handler wraps the exception, and then throws.
         mv.visitLabel(catchBlockStart);
-        // Add the exception to the frame
-        mv.visitFrame(
-            Opcodes.F_SAME1,
-            // No local variables
-            0,
-            new Object[] {},
-            // 1 stack element (the throwable)
-            1,
-            new Object[] {throwableName});
+        // In catch block, should have same locals and {Throwable} on the stack.
+        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 1, new Object[] {throwableName});
 
         Size catchSize =
             new Compound(MethodInvocation.invoke(createUserCodeException), Throw.INSTANCE)
                 .apply(mv, implementationContext);
 
+        mv.visitLabel(catchBlockEnd);
+        // After catch block, should have same locals and empty stack.
+        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 0, new Object[] {});
+
+        if (returnType != TypeDescription.VOID) {
+          mv.visitVarInsn(Opcodes.ALOAD, returnVarIndex);
+        }
+        mv.visitLabel(wrapEnd);
+        if (returnType != TypeDescription.VOID) {
+          mv.visitLocalVariable(
+              "res",
+              returnType.getDescriptor(),
+              returnType.getGenericSignature(),
+              wrapStart,
+              wrapEnd,
+              returnVarIndex);
+        }
+
         return new Size(
-            trySize.getSizeImpact(),
+            trySize.getSizeImpact() /* Same total size impact as wrapped body */,
             Math.max(trySize.getMaximalSize(), catchSize.getMaximalSize()));
       }
     };
