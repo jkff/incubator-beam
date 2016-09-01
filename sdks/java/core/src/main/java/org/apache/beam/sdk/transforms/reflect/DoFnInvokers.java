@@ -20,7 +20,6 @@ package org.apache.beam.sdk.transforms.reflect;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.reflect.TypeToken;
-import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -32,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.NamingStrategy;
+import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.field.FieldDescription;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.modifier.FieldManifestation;
@@ -45,6 +45,7 @@ import net.bytebuddy.dynamic.scaffold.subclass.ConstructorStrategy;
 import net.bytebuddy.implementation.ExceptionMethod;
 import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.Implementation.Context;
 import net.bytebuddy.implementation.MethodCall;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
@@ -61,8 +62,6 @@ import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
-import net.bytebuddy.jar.asm.Type;
-import net.bytebuddy.jar.asm.commons.LocalVariablesSorter;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
@@ -169,6 +168,15 @@ public class DoFnInvokers {
     }
   }
 
+  private static class UserCodeExceptionWrapper {
+    @Advice.OnMethodExit
+    public void onExit(@Advice.Thrown Throwable thrown) {
+      if (thrown != null) {
+        throw UserCodeException.wrap(thrown);
+      }
+    }
+  }
+
   /** Generates a {@link DoFnInvoker} class for the given {@link DoFnSignature}. */
   private static Class<? extends DoFnInvoker<?, ?>> generateInvokerClass(DoFnSignature signature) {
     Class<? extends DoFn> fnClass = signature.fnClass();
@@ -225,14 +233,14 @@ public class DoFnInvokers {
             .intercept(delegateWithDowncastOrThrow(signature.newTracker()));
 
     DynamicType.Unloaded<?> unloaded = builder.make();
-    try {
-      try (FileOutputStream w =
-          new FileOutputStream("/usr/local/google/home/kirpichov/incubator-beam/foo.class")) {
-        w.write(unloaded.getBytes());
-      }
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
+//    try {
+//      try (FileOutputStream w =
+//          new FileOutputStream("/usr/local/google/home/kirpichov/incubator-beam/foo.class")) {
+//        w.write(unloaded.getBytes());
+//      }
+//    } catch (Exception e) {
+//      e.printStackTrace();
+//    }
 
     @SuppressWarnings("unchecked")
     Class<? extends DoFnInvoker<?, ?>> res =
@@ -460,92 +468,108 @@ public class DoFnInvokers {
     }
   }
 
+  private abstract static class BaseWrapUserCodeException implements StackManipulation {
+
+    /** {@link MethodDescription} for {@link UserCodeException#wrap} */
+    private final MethodDescription createUserCodeException;
+    private final String throwableName =
+        new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
+
+    private final StackManipulation tryBody;
+    private final MethodDescription instrumentedMethod;
+
+    protected BaseWrapUserCodeException(
+        StackManipulation tryBody, MethodDescription instrumentedMethod) {
+      this.tryBody = tryBody;
+      this.instrumentedMethod = instrumentedMethod;
+      try {
+        createUserCodeException =
+            new MethodDescription.ForLoadedMethod(
+                UserCodeException.class.getDeclaredMethod("wrap", Throwable.class));
+      } catch (NoSuchMethodException | SecurityException e) {
+        throw new RuntimeException("Unable to find UserCodeException.wrap", e);
+      }
+    }
+
+    @Override
+    public boolean isValid() {
+      return tryBody.isValid();
+    }
+
+    void visitFrameWithThrowableOnStack(MethodVisitor mv) {
+      String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
+      mv.visitFrame(Opcodes.F_SAME1, 0, new Object[] {}, 1, new Object[] {throwableName});
+    }
+    protected abstract void visitFrameWithReturnOnStack(MethodVisitor mv);
+
+    @Override
+    public Size apply(MethodVisitor mv, Context implementationContext) {
+      Label wrapStart = new Label();
+      Label tryBlockStart = new Label();
+      Label tryBlockEnd = new Label();
+      Label catchBlockStart = new Label();
+      Label catchBlockEnd = new Label();
+
+      mv.visitLabel(wrapStart);
+
+      String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
+      mv.visitTryCatchBlock(tryBlockStart, tryBlockEnd, catchBlockStart, throwableName);
+
+      // The try block attempts to perform the expected operations, then jumps to success
+      mv.visitLabel(tryBlockStart);
+      Size trySize = tryBody.apply(mv, implementationContext);
+
+      // After try body, should have same locals and the return type on the stack.
+      visitFrameWithReturnOnStack(mv);
+      mv.visitJumpInsn(Opcodes.GOTO, catchBlockEnd);
+      mv.visitLabel(tryBlockEnd);
+
+      // The handler wraps the exception, and then throws.
+      mv.visitLabel(catchBlockStart);
+      // In catch block, should have same locals and {Throwable} on the stack.
+      visitFrameWithThrowableOnStack(mv);
+
+      Size catchSize =
+          new Compound(MethodInvocation.invoke(createUserCodeException), Throw.INSTANCE)
+              .apply(mv, implementationContext);
+
+      mv.visitLabel(catchBlockEnd);
+      // After catch block, should have same locals and the return type on the stack
+      visitFrameWithReturnOnStack(mv);
+
+      return new Size(
+          trySize.getSizeImpact() /* Same total size impact as wrapped body */,
+          Math.max(trySize.getMaximalSize(), catchSize.getMaximalSize()));
+    }
+  }
+
   /**
    * Wraps a given stack manipulation in a try catch block. Any exceptions thrown within the try are
    * wrapped with a {@link UserCodeException}.
    */
   private static StackManipulation wrapWithUserCodeException(
-      final StackManipulation tryBody,
+      StackManipulation tryBody,
       final TypeDescription returnType,
-      final MethodDescription instrumentedMethod) {
-    final MethodDescription createUserCodeException;
-    try {
-      createUserCodeException =
-          new MethodDescription.ForLoadedMethod(
-              UserCodeException.class.getDeclaredMethod("wrap", Throwable.class));
-    } catch (NoSuchMethodException | SecurityException e) {
-      throw new RuntimeException("Unable to find UserCodeException.wrap", e);
+      MethodDescription instrumentedMethod) {
+    if (TypeDescription.VOID.equals(returnType)) {
+      return new BaseWrapUserCodeException(tryBody, instrumentedMethod) {
+        @Override
+        protected void visitFrameWithReturnOnStack(MethodVisitor mv) {
+          mv.visitFrame(Opcodes.F_SAME,
+              0, new Object[] {},
+              0, new Object[] {});
+        }
+      };
+    } else {
+      return new BaseWrapUserCodeException(tryBody, instrumentedMethod) {
+        @Override
+        protected void visitFrameWithReturnOnStack(MethodVisitor mv) {
+          mv.visitFrame(Opcodes.F_SAME1,
+              0, new Object[] {},
+              1, new Object[] {returnType.getInternalName()});
+        }
+      };
     }
-
-    return new StackManipulation() {
-      @Override
-      public boolean isValid() {
-        return tryBody.isValid();
-      }
-
-      @Override
-      public Size apply(MethodVisitor originalMV, Implementation.Context implementationContext) {
-        LocalVariablesSorter mv =
-            new LocalVariablesSorter(
-                instrumentedMethod.getActualModifiers(),
-                instrumentedMethod.getDescriptor(),
-                originalMV);
-        Label wrapStart = new Label();
-        Label wrapEnd = new Label();
-        Label tryBlockStart = new Label();
-        Label tryBlockEnd = new Label();
-        Label catchBlockStart = new Label();
-        Label catchBlockEnd = new Label();
-
-        mv.visitLabel(wrapStart);
-        int returnVarIndex = mv.newLocal(Type.getType(returnType.getDescriptor()));
-
-        String throwableName = new TypeDescription.ForLoadedType(Throwable.class).getInternalName();
-        mv.visitTryCatchBlock(tryBlockStart, tryBlockEnd, catchBlockStart, throwableName);
-
-        // The try block attempts to perform the expected operations, then jumps to success
-        mv.visitLabel(tryBlockStart);
-        Size trySize = tryBody.apply(mv, implementationContext);
-        if (returnType != TypeDescription.VOID) {
-          mv.visitVarInsn(Opcodes.ASTORE, returnVarIndex);
-        }
-        // After try body, should have same locals and empty stack.
-        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 0, new Object[] {});
-        mv.visitJumpInsn(Opcodes.GOTO, catchBlockEnd);
-        mv.visitLabel(tryBlockEnd);
-
-        // The handler wraps the exception, and then throws.
-        mv.visitLabel(catchBlockStart);
-        // In catch block, should have same locals and {Throwable} on the stack.
-        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 1, new Object[] {throwableName});
-
-        Size catchSize =
-            new Compound(MethodInvocation.invoke(createUserCodeException), Throw.INSTANCE)
-                .apply(mv, implementationContext);
-
-        mv.visitLabel(catchBlockEnd);
-        // After catch block, should have same locals and empty stack.
-        mv.visitFrame(Opcodes.F_NEW, 0, new Object[] {}, 0, new Object[] {});
-
-        if (returnType != TypeDescription.VOID) {
-          mv.visitVarInsn(Opcodes.ALOAD, returnVarIndex);
-        }
-        mv.visitLabel(wrapEnd);
-        if (returnType != TypeDescription.VOID) {
-          mv.visitLocalVariable(
-              "res",
-              returnType.getDescriptor(),
-              returnType.getGenericSignature(),
-              wrapStart,
-              wrapEnd,
-              returnVarIndex);
-        }
-
-        return new Size(
-            trySize.getSizeImpact() /* Same total size impact as wrapped body */,
-            Math.max(trySize.getMaximalSize(), catchSize.getMaximalSize()));
-      }
-    };
   }
 
   /**
