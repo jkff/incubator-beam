@@ -452,7 +452,7 @@ public class DoFnInvokers {
 
   private abstract static class BaseWrapUserCodeException implements StackManipulation {
 
-    /** {@link MethodDescription} for {@link UserCodeException#wrap} */
+    /** {@link MethodDescription} for {@link UserCodeException#wrap}. */
     private final MethodDescription createUserCodeException;
 
     private final StackManipulation tryBody;

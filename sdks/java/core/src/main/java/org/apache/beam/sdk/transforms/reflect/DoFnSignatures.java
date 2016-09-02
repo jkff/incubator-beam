@@ -220,12 +220,14 @@ public class DoFnSignatures {
             formatType(getRestrictionCoder.coderT()),
             formatType(coderTypeOf(getInitialRestriction.restrictionT())));
       }
-      getInitialRestrictionErrors.checkArgument(
-          splitRestriction.restrictionT().equals(getInitialRestriction.restrictionT()),
-          "Uses restriction type %s, but @SplitRestriction method %s uses restriction type %s",
-          formatType(getInitialRestriction.restrictionT()),
-          format(splitRestrictionMethod),
-          formatType(splitRestriction.restrictionT()));
+      if (splitRestriction != null) {
+        getInitialRestrictionErrors.checkArgument(
+            splitRestriction.restrictionT().equals(getInitialRestriction.restrictionT()),
+            "Uses restriction type %s, but @SplitRestriction method %s uses restriction type %s",
+            formatType(getInitialRestriction.restrictionT()),
+            format(splitRestrictionMethod),
+            formatType(splitRestriction.restrictionT()));
+      }
     } else {
       processElementErrors.checkArgument(
           isBounded == null,
@@ -403,6 +405,7 @@ public class DoFnSignatures {
     return DoFnSignature.LifecycleMethod.create(m);
   }
 
+  @VisibleForTesting
   static DoFnSignature.GetInitialRestrictionMethod analyzeGetInitialRestrictionMethod(
       ErrorReporter errors, TypeToken<? extends DoFn> fnToken, Method m, TypeToken<?> inputT) {
     // Method is of the form:
@@ -422,6 +425,7 @@ public class DoFnSignatures {
     return new TypeToken<List<T>>() {}.where(new TypeParameter<T>() {}, elementT);
   }
 
+  @VisibleForTesting
   static DoFnSignature.SplitRestrictionMethod analyzeSplitRestrictionMethod(
       ErrorReporter errors, TypeToken<? extends DoFn> fnToken, Method m, TypeToken<?> inputT) {
     // Method is of the form:
@@ -433,14 +437,16 @@ public class DoFnSignatures {
         fnToken.resolveType(params[0]).equals(inputT),
         "First argument must be the element type %s",
         formatType(inputT));
-    errors.checkArgument(params[2].equals(int.class), "Second argument must be int");
+    errors.checkArgument(params[2].equals(int.class), "Third argument must be int");
 
     TypeToken<?> restrictionT = fnToken.resolveType(params[1]);
     TypeToken<? extends List<?>> expectedReturnT = listTypeOf(restrictionT);
+    TypeToken<?> returnT = fnToken.resolveType(m.getGenericReturnType());
     errors.checkArgument(
-        fnToken.resolveType(m.getGenericReturnType()).equals(expectedReturnT),
-        "Must return %s",
-        formatType(expectedReturnT));
+        returnT.equals(expectedReturnT),
+        "Must return %s, but returns %s",
+        formatType(expectedReturnT),
+        formatType(returnT));
     return DoFnSignature.SplitRestrictionMethod.create(m, restrictionT);
   }
 
@@ -449,6 +455,7 @@ public class DoFnSignatures {
     return new TypeToken<Coder<T>>() {}.where(new TypeParameter<T>() {}, elementT);
   }
 
+  @VisibleForTesting
   static DoFnSignature.GetRestrictionCoderMethod analyzeGetRestrictionCoderMethod(
       ErrorReporter errors, TypeToken<? extends DoFn> fnToken, Method m) {
     errors.checkArgument(m.getParameterTypes().length == 0, "Must have zero arguments");
@@ -470,7 +477,8 @@ public class DoFnSignatures {
         new TypeParameter<RestrictionT>() {}, restrictionT);
   }
 
-  private static DoFnSignature.NewTrackerMethod analyzeNewTrackerMethod(
+  @VisibleForTesting
+  static DoFnSignature.NewTrackerMethod analyzeNewTrackerMethod(
       ErrorReporter errors, TypeToken<? extends DoFn> fnToken, Method m) {
     // Method is of the form:
     // @NewTracker
@@ -483,7 +491,7 @@ public class DoFnSignatures {
     TypeToken<?> expectedTrackerT = restrictionTrackerTypeOf(restrictionT);
     errors.checkArgument(
         trackerT.isSubtypeOf(expectedTrackerT),
-        "Argument has type %s, but must be a subtype of %s",
+        "Returns %s, but must return a subtype of %s",
         formatType(trackerT),
         formatType(expectedTrackerT));
     return DoFnSignature.NewTrackerMethod.create(m, restrictionT, trackerT);
@@ -564,7 +572,7 @@ public class DoFnSignatures {
     private final String label;
 
     ErrorReporter(@Nullable ErrorReporter root, String label) {
-      this.label = (root == null) ? label : String.format("%s [%s]", root.label, label);
+      this.label = (root == null) ? label : String.format("%s, %s", root.label, label);
     }
 
     ErrorReporter forMethod(String annotation, Method method) {
@@ -572,7 +580,7 @@ public class DoFnSignatures {
     }
 
     void throwIllegalArgument(String message, Object... args) {
-      throw new IllegalArgumentException(label + " " + String.format(message, args));
+      throw new IllegalArgumentException(label + ": " + String.format(message, args));
     }
 
     public void checkArgument(boolean condition, String message, Object... args) {

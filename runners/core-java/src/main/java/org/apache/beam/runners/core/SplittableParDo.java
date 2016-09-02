@@ -229,30 +229,31 @@ public class SplittableParDo<
       WatermarkHoldState<GlobalWindow> holdState =
           c.windowingInternals().stateInternals().state(stateNamespace, watermarkHoldTag);
 
-      ElementRestriction<WindowedValue<InputT>, RestrictionT> state;
+      ElementRestriction<WindowedValue<InputT>, RestrictionT> elementRestriction;
       if (isSeedCall) {
         // The element and restriction are available in c.element().
         WindowedValue<ElementRestriction<InputT, RestrictionT>> windowedValue =
             Iterables.getOnlyElement(c.element().elementsIterable());
         WindowedValue<InputT> element = windowedValue.withValue(windowedValue.getValue().element());
         elementState.write(element);
-        state = ElementRestriction.of(element, windowedValue.getValue().restriction());
+        elementRestriction = ElementRestriction.of(element, windowedValue.getValue().restriction());
       } else {
         // This is not the first ProcessElement call for this element/restriction - rather,
         // this is a timer firing, so we need to fetch the element and restriction from state.
         elementState.readLater();
         restrictionState.readLater();
-        state = ElementRestriction.of(elementState.read(), restrictionState.read());
+        elementRestriction = ElementRestriction.of(elementState.read(), restrictionState.read());
       }
 
-      final TrackerT tracker = invoker.invokeNewTracker(state.restriction());
+      final TrackerT tracker = invoker.invokeNewTracker(elementRestriction.restriction());
       @SuppressWarnings("unchecked")
       final RestrictionT[] residual = (RestrictionT[]) new Object[1];
       // TODO: Only let the call run for a limited amount of time, rather than simply
       // producing a limited amount of output.
       DoFn.ProcessContinuation cont =
           invoker.invokeProcessElement(
-              makeContext(c, state.element(), tracker, residual), wrapTracker(tracker));
+              makeContext(c, elementRestriction.element(), tracker, residual),
+              wrapTracker(tracker));
       if (residual[0] == null) {
         // This means the call completed unsolicited, and the context produced by makeContext()
         // did not take a checkpoint. Take one now.
