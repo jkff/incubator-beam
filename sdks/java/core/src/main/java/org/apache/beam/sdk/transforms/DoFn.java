@@ -21,6 +21,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.base.Objects;
 import java.io.Serializable;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -619,6 +620,19 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
     /** Builder method to set the value of {@link #getFutureOutputWatermark()}. */
     public ProcessContinuation withFutureOutputWatermark(Instant futureOutputWatermark) {
       return new ProcessContinuation(resumeDelay, futureOutputWatermark);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      } else if (!(obj instanceof ProcessContinuation)) {
+        return false;
+      } else {
+        ProcessContinuation that = (ProcessContinuation) obj;
+        return Objects.equal(this.resumeDelay, that.resumeDelay)
+            && Objects.equal(this.futureOutputWatermark, that.futureOutputWatermark);
+      }
     }
   }
 

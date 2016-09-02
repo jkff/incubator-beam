@@ -17,11 +17,13 @@
  */
 package org.apache.beam.sdk.transforms.reflect;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.DoFn.ProcessContinuation;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.UserCodeException;
@@ -87,7 +89,8 @@ public class DoFnInvokersTest {
         };
   }
 
-  private void checkInvokeProcessElementWorks(DoFn<String, String> fn, Invocations... invocations)
+  private void checkInvokeProcessElementWorks(
+      DoFn<String, String> fn, ProcessContinuation expected, Invocations... invocations)
       throws Exception {
     assertTrue("Need at least one invocation to check", invocations.length >= 1);
     for (Invocations invocation : invocations) {
@@ -95,9 +98,10 @@ public class DoFnInvokersTest {
           "Should not yet have called processElement on " + invocation.name,
           invocation.wasProcessElementInvoked);
     }
-    DoFnInvokers.INSTANCE
+    ProcessContinuation actual = DoFnInvokers.INSTANCE
         .newByteBuddyInvoker(fn)
         .invokeProcessElement(mockContext, extraContextFactory);
+    assertEquals("Should return proper continuation", expected, actual);
     for (Invocations invocation : invocations) {
       assertTrue(
           "Should have called processElement on " + invocation.name,
@@ -182,7 +186,7 @@ public class DoFnInvokersTest {
             .processElement()
             .usesSingleWindow());
 
-    checkInvokeProcessElementWorks(fn, invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), invocations);
   }
 
   @Test
@@ -223,7 +227,7 @@ public class DoFnInvokersTest {
             .getOrParseSignature(fn.getClass())
             .processElement()
             .usesSingleWindow());
-    checkInvokeProcessElementWorks(fn, fn.invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), fn.invocations);
   }
 
   private class IdentityParent extends DoFn<String, String> {
@@ -256,7 +260,7 @@ public class DoFnInvokersTest {
             .getOrParseSignature(fn.getClass())
             .processElement()
             .usesSingleWindow());
-    checkInvokeProcessElementWorks(fn, fn.parentInvocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), fn.parentInvocations);
   }
 
   @Test
@@ -267,7 +271,8 @@ public class DoFnInvokersTest {
             .getOrParseSignature(fn.getClass())
             .processElement()
             .usesSingleWindow());
-    checkInvokeProcessElementWorks(fn, fn.parentInvocations, fn.childInvocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(),
+        fn.parentInvocations, fn.childInvocations);
   }
 
   @Test
@@ -289,7 +294,7 @@ public class DoFnInvokersTest {
             .processElement()
             .usesSingleWindow());
 
-    checkInvokeProcessElementWorks(fn, invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), invocations);
   }
 
   @Test
@@ -311,7 +316,7 @@ public class DoFnInvokersTest {
             .processElement()
             .usesSingleWindow());
 
-    checkInvokeProcessElementWorks(fn, invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), invocations);
   }
 
   @Test
@@ -333,7 +338,31 @@ public class DoFnInvokersTest {
             .processElement()
             .usesSingleWindow());
 
-    checkInvokeProcessElementWorks(fn, invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), invocations);
+  }
+
+  @Test
+  public void testDoFnWithReturn() throws Exception {
+    final Invocations invocations = new Invocations("AnonymousClass");
+    DoFn<String, String> fn =
+        new DoFn<String, String>() {
+          @ProcessElement
+          public ProcessContinuation processElement(
+              ProcessContext c, InputProvider<String> i) throws Exception {
+            invocations.wasProcessElementInvoked = true;
+            assertSame(c, mockContext);
+            assertSame(i, mockInputProvider);
+            return ProcessContinuation.resume();
+          }
+        };
+
+    assertFalse(
+        DoFnSignatures.INSTANCE
+            .getOrParseSignature(fn.getClass())
+            .processElement()
+            .usesSingleWindow());
+
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.resume(), invocations);
   }
 
   @Test
@@ -408,49 +437,61 @@ public class DoFnInvokersTest {
   @Test
   public void testLocalPrivateDoFnClass() throws Exception {
     PrivateDoFnClass fn = new PrivateDoFnClass();
-    checkInvokeProcessElementWorks(fn, fn.invocations);
+    checkInvokeProcessElementWorks(fn, ProcessContinuation.stop(), fn.invocations);
   }
 
   @Test
   public void testStaticPackagePrivateDoFnClass() throws Exception {
     Invocations invocations = new Invocations("StaticPackagePrivateDoFn");
     checkInvokeProcessElementWorks(
-        DoFnInvokersTestHelper.newStaticPackagePrivateDoFn(invocations), invocations);
+        DoFnInvokersTestHelper.newStaticPackagePrivateDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
   public void testInnerPackagePrivateDoFnClass() throws Exception {
     Invocations invocations = new Invocations("InnerPackagePrivateDoFn");
     checkInvokeProcessElementWorks(
-        new DoFnInvokersTestHelper().newInnerPackagePrivateDoFn(invocations), invocations);
+        new DoFnInvokersTestHelper().newInnerPackagePrivateDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
   public void testStaticPrivateDoFnClass() throws Exception {
     Invocations invocations = new Invocations("StaticPrivateDoFn");
     checkInvokeProcessElementWorks(
-        DoFnInvokersTestHelper.newStaticPrivateDoFn(invocations), invocations);
+        DoFnInvokersTestHelper.newStaticPrivateDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
   public void testInnerPrivateDoFnClass() throws Exception {
     Invocations invocations = new Invocations("StaticInnerDoFn");
     checkInvokeProcessElementWorks(
-        new DoFnInvokersTestHelper().newInnerPrivateDoFn(invocations), invocations);
+        new DoFnInvokersTestHelper().newInnerPrivateDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
   public void testAnonymousInnerDoFnInOtherPackage() throws Exception {
     Invocations invocations = new Invocations("AnonymousInnerDoFnInOtherPackage");
     checkInvokeProcessElementWorks(
-        new DoFnInvokersTestHelper().newInnerAnonymousDoFn(invocations), invocations);
+        new DoFnInvokersTestHelper().newInnerAnonymousDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
   public void testStaticAnonymousDoFnInOtherPackage() throws Exception {
     Invocations invocations = new Invocations("AnonymousStaticDoFnInOtherPackage");
     checkInvokeProcessElementWorks(
-        DoFnInvokersTestHelper.newStaticAnonymousDoFn(invocations), invocations);
+        DoFnInvokersTestHelper.newStaticAnonymousDoFn(invocations),
+        ProcessContinuation.stop(),
+        invocations);
   }
 
   @Test
@@ -467,6 +508,22 @@ public class DoFnInvokersTest {
     thrown.expectMessage("bogus");
     DoFnInvokers.INSTANCE.newByteBuddyInvoker(fn).invokeProcessElement(null, null);
   }
+
+  @Test
+  public void testProcessElementExceptionWithReturn() throws Exception {
+    DoFn<Integer, Integer> fn =
+        new DoFn<Integer, Integer>() {
+          @ProcessElement
+          public ProcessContinuation processElement(@SuppressWarnings("unused") ProcessContext c) {
+            throw new IllegalArgumentException("bogus");
+          }
+        };
+
+    thrown.expect(UserCodeException.class);
+    thrown.expectMessage("bogus");
+    DoFnInvokers.INSTANCE.newByteBuddyInvoker(fn).invokeProcessElement(null, null);
+  }
+
 
   @Test
   public void testStartBundleException() throws Exception {
