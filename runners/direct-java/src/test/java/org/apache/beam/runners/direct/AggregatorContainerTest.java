@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.beam.sdk.transforms.Aggregator;
 import org.apache.beam.sdk.transforms.Sum.SumIntegerFn;
-import org.apache.beam.sdk.util.ExecutionContext.StepContext;
+import org.apache.beam.runners.core.ExecutionContext.StepContext;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;

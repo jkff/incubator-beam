@@ -22,9 +22,11 @@ import static org.junit.Assert.fail;
 import com.google.common.collect.Iterables;
 import java.io.Serializable;
 import org.apache.beam.sdk.io.CountingInput;
+import org.apache.beam.sdk.testing.GatherAllPanes;
 import org.apache.beam.sdk.testing.NeedsRunner;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.testing.ValueInSingleWindow;
 import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.SerializableFunction;
@@ -45,16 +47,14 @@ import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link GatherAllPanes}.
- */
+/** Tests for {@link GatherAllPanes}. */
 @RunWith(JUnit4.class)
 public class GatherAllPanesTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void singlePaneSingleReifiedPane() {
     TestPipeline p = TestPipeline.create();
-    PCollection<Iterable<WindowedValue<Iterable<Long>>>> accumulatedPanes =
+    PCollection<Iterable<ValueInSingleWindow<Iterable<Long>>>> accumulatedPanes =
         p.apply(CountingInput.upTo(20000))
             .apply(
                 WithTimestamps.of(
@@ -76,10 +76,11 @@ public class GatherAllPanesTest implements Serializable {
 
     PAssert.that(accumulatedPanes)
         .satisfies(
-            new SerializableFunction<Iterable<Iterable<WindowedValue<Iterable<Long>>>>, Void>() {
+            new SerializableFunction<
+                Iterable<Iterable<ValueInSingleWindow<Iterable<Long>>>>, Void>() {
               @Override
-              public Void apply(Iterable<Iterable<WindowedValue<Iterable<Long>>>> input) {
-                for (Iterable<WindowedValue<Iterable<Long>>> windowedInput : input) {
+              public Void apply(Iterable<Iterable<ValueInSingleWindow<Iterable<Long>>>> input) {
+                for (Iterable<ValueInSingleWindow<Iterable<Long>>> windowedInput : input) {
                   if (Iterables.size(windowedInput) > 1) {
                     fail("Expected all windows to have exactly one pane, got " + windowedInput);
                     return null;
@@ -99,7 +100,7 @@ public class GatherAllPanesTest implements Serializable {
 
     PCollection<Long> someElems = p.apply("someLongs", CountingInput.upTo(20000));
     PCollection<Long> otherElems = p.apply("otherLongs", CountingInput.upTo(20000));
-    PCollection<Iterable<WindowedValue<Iterable<Long>>>> accumulatedPanes =
+    PCollection<Iterable<ValueInSingleWindow<Iterable<Long>>>> accumulatedPanes =
         PCollectionList.of(someElems)
             .and(otherElems)
             .apply(Flatten.<Long>pCollections())
@@ -125,10 +126,11 @@ public class GatherAllPanesTest implements Serializable {
 
     PAssert.that(accumulatedPanes)
         .satisfies(
-            new SerializableFunction<Iterable<Iterable<WindowedValue<Iterable<Long>>>>, Void>() {
+            new SerializableFunction<
+                Iterable<Iterable<ValueInSingleWindow<Iterable<Long>>>>, Void>() {
               @Override
-              public Void apply(Iterable<Iterable<WindowedValue<Iterable<Long>>>> input) {
-                for (Iterable<WindowedValue<Iterable<Long>>> windowedInput : input) {
+              public Void apply(Iterable<Iterable<ValueInSingleWindow<Iterable<Long>>>> input) {
+                for (Iterable<ValueInSingleWindow<Iterable<Long>>> windowedInput : input) {
                   if (Iterables.size(windowedInput) > 1) {
                     return null;
                   }
