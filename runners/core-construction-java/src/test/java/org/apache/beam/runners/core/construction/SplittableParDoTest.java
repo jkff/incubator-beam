@@ -68,6 +68,16 @@ public class SplittableParDoTest {
 
     @Override
     public void checkDone() {}
+
+    @Override
+    public double getFractionClaimed() {
+      return 0;
+    }
+
+    @Override
+    public SomeRestriction splitRemainderAfterFraction(double fractionOfRemainder) {
+      return null;
+    }
   }
 
   @BoundedPerElement

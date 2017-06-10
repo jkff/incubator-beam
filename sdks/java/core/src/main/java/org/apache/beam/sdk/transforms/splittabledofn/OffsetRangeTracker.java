@@ -22,12 +22,16 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import org.apache.beam.sdk.transforms.DoFn;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link RestrictionTracker} for claiming offsets in an {@link OffsetRange} in a monotonically
  * increasing fashion.
  */
 public class OffsetRangeTracker implements RestrictionTracker<OffsetRange> {
+  private static final Logger LOG = LoggerFactory.getLogger(OffsetRangeTracker.class);
+
   private OffsetRange range;
   private Long lastClaimedOffset = null;
   private Long lastAttemptedOffset = null;
@@ -76,6 +80,50 @@ public class OffsetRangeTracker implements RestrictionTracker<OffsetRange> {
     }
     lastClaimedOffset = i;
     return true;
+  }
+
+  @Override
+  public synchronized double getFractionClaimed() {
+    if (lastAttemptedOffset == null) {
+      return 0.0;
+    }
+    // E.g., when reading [3, 6) and lastRecordStart is 4, that means we consumed 3 of 3,4,5
+    // which is (4 - 3) / (6 - 3) = 33%.
+    // Also, clamp to at most 1.0 because the last consumed position can extend past the
+    // stop position.
+    return Math.min(
+        1.0, 1.0 * (lastAttemptedOffset - range.getFrom()) / (range.getTo() - range.getFrom()));
+  }
+
+  @Override
+  public String toString() {
+    return "OffsetRangeTracker{" +
+        "range=" + range +
+        ", lastClaimedOffset=" + lastClaimedOffset +
+        ", lastAttemptedOffset=" + lastAttemptedOffset +
+        '}';
+  }
+
+  @Override
+  public synchronized OffsetRange splitRemainderAfterFraction(double fractionOfRemainder) {
+    LOG.info("ORT {} - requesting splitRemainderAfterFraction {}", this, fractionOfRemainder);
+    long remainderStart = (lastAttemptedOffset == null) ? range.getFrom() : lastAttemptedOffset;
+    long splitOffset =
+        remainderStart + (long) Math.floor(fractionOfRemainder * (range.getTo() - remainderStart));
+    LOG.info("Split offset is {}", splitOffset);
+    if (lastClaimedOffset != null && splitOffset <= lastClaimedOffset) {
+      LOG.info("Rejecting split request - before last claimed");
+      return null;
+    }
+    if (splitOffset >= range.getTo()) {
+      LOG.info("Rejecting split request - past end of range");
+      return null;
+    }
+    OffsetRange primary = new OffsetRange(range.getFrom(), splitOffset);
+    OffsetRange residual = new OffsetRange(splitOffset, range.getTo());
+    this.range = primary;
+    LOG.info("Accepted split request - now {}", this);
+    return residual;
   }
 
   /**

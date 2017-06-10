@@ -46,5 +46,9 @@ public interface RestrictionTracker<RestrictionT> {
    */
   void checkDone() throws IllegalStateException;
 
+  double getFractionClaimed();
+
+  RestrictionT splitRemainderAfterFraction(double fractionOfRemainder);
+
   // TODO: Add the more general splitRemainderAfterFraction() and other methods.
 }

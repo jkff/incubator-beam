@@ -93,7 +93,7 @@ class TextSource extends FileBasedSource<String> {
     private String currentValue;
     private ReadableByteChannel inChannel;
 
-    private TextBasedReader(TextSource source) {
+    TextBasedReader(TextSource source) {
       super(source);
       buffer = ByteString.EMPTY;
     }

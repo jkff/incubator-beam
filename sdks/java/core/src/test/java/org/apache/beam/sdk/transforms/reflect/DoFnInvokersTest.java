@@ -391,6 +391,16 @@ public class DoFnInvokersTest {
 
     @Override
     public void checkDone() throws IllegalStateException {}
+
+    @Override
+    public double getFractionClaimed() {
+      return 0;
+    }
+
+    @Override
+    public RestrictionWithDefaultTracker splitRemainderAfterFraction(double fractionOfRemainder) {
+      return null;
+    }
   }
 
   private static class CoderForDefaultTracker extends AtomicCoder<RestrictionWithDefaultTracker> {

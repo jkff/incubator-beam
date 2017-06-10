@@ -107,7 +107,13 @@ public class SourceTestUtils {
 
     @Override
     public String toString() {
-      return String.format("[%s (structural %s)]", originalValue, structuralValue);
+      String originalToString = String.valueOf(originalValue);
+      String structuralToString = String.valueOf(structuralValue);
+      if (originalToString.equals(structuralToString)) {
+        return originalToString;
+      } else {
+        return String.format("[%s (structural %s)]", originalValue, structuralValue);
+      }
     }
   }
 
@@ -307,6 +313,15 @@ public class SourceTestUtils {
   private static <T> void assertListsEqualInOrder(
       String message, String expectedLabel, List<T> expected, String actualLabel, List<T> actual) {
     int i = 0;
+    // Easier to read message for cases with small amount of data
+    if (expected.size() <= 10 && actual.size() <= 10) {
+      if (!actual.equals(expected)) {
+        Assert.fail(
+            String.format(
+                "%s: %s and %s differ. %s: %s, %s: %s",
+                message, expectedLabel, actualLabel, expectedLabel, expected, actualLabel, actual));
+      }
+    }
     for (; i < expected.size() && i < actual.size(); ++i) {
       if (!Objects.equals(expected.get(i), actual.get(i))) {
         Assert.fail(String.format(
@@ -397,24 +412,6 @@ public class SourceTestUtils {
       List<T> totalItems = new ArrayList<>();
       totalItems.addAll(primaryItems);
       totalItems.addAll(residualItems);
-      String errorMsgForPrimarySourceComp =
-          String.format(
-              "Continued reading after split yielded different items than primary source: "
-                  + "split at %s after reading %s items, original source: %s, primary source: %s",
-              splitFraction,
-              numItemsToReadBeforeSplit,
-              source,
-              primary);
-      String errorMsgForTotalSourceComp =
-          String.format(
-              "Items in primary and residual sources after split do not add up to items "
-                  + "in the original source. Split at %s after reading %s items; "
-                  + "original source: %s, primary: %s, residual: %s",
-              splitFraction,
-              numItemsToReadBeforeSplit,
-              source,
-              primary,
-              residual);
       Coder<T> coder = primary.getDefaultOutputCoder();
       List<ReadableStructuralValue<T>> primaryValues =
           createStructuralValues(coder, primaryItems);
@@ -424,10 +421,28 @@ public class SourceTestUtils {
           createStructuralValues(coder, expectedItems);
       List<ReadableStructuralValue<T>> totalValues =
           createStructuralValues(coder, totalItems);
+      if (currentValues.size() != primaryValues.size()) {
+        System.out.println("oops");
+      }
       assertListsEqualInOrder(
-          errorMsgForPrimarySourceComp, "current", currentValues, "primary", primaryValues);
+          String.format(
+              "Continued reading after split yielded different items than primary source: "
+                  + "split at %s after reading %s items, original source: %s, primary source: %s",
+              splitFraction, numItemsToReadBeforeSplit, source, primary),
+          "current",
+          currentValues,
+          "primary",
+          primaryValues);
       assertListsEqualInOrder(
-          errorMsgForTotalSourceComp, "total", expectedValues, "primary+residual", totalValues);
+          String.format(
+              "Items in primary and residual sources after split do not add up to items "
+                  + "in the original source. Split at %s after reading %s items; "
+                  + "original source: %s, primary: %s, residual: %s",
+              splitFraction, numItemsToReadBeforeSplit, source, primary, residual),
+          "total",
+          expectedValues,
+          "primary+residual",
+          totalValues);
       return new SplitAtFractionResult(primaryItems.size(), residualItems.size());
     }
     return new SplitAtFractionResult(primaryItems.size(), -1);
