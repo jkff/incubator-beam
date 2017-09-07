@@ -222,7 +222,7 @@ class WriteBundlesToFiles<DestinationT>
     try {
       writer.write(c.element().getValue());
     } catch (Exception e) {
-      // Discard write result and close the write.
+      // Discard write result and close the writeToDynamic.
       try {
         writer.close();
         // The writer does not need to be reset, as this DoFn cannot be reused.

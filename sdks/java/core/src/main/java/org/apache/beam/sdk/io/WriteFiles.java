@@ -137,7 +137,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   private int maxNumWritersPerBundle;
   // This is the set of side inputs used by this transform. This is usually populated by the users's
   // DynamicDestinations object.
-  private final List<PCollectionView<?>> sideInputs;
+  private final Collection<PCollectionView<?>> sideInputs;
 
   /**
    * Creates a {@link WriteFiles} transform that writes to the given {@link FileBasedSink}, letting
@@ -161,7 +161,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       @Nullable ValueProvider<Integer> numShardsProvider,
       boolean windowedWrites,
       int maxNumWritersPerBundle,
-      List<PCollectionView<?>> sideInputs) {
+      Collection<PCollectionView<?>> sideInputs) {
     this.sink = sink;
     this.computeNumShards = computeNumShards;
     this.numShardsProvider = numShardsProvider;
@@ -288,7 +288,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   }
 
   public WriteFiles<UserT, DestinationT, OutputT> withSideInputs(
-      List<PCollectionView<?>> sideInputs) {
+      Collection<PCollectionView<?>> sideInputs) {
     return new WriteFiles<>(
         sink,
         computeNumShards,
@@ -406,7 +406,6 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     @ProcessElement
     public void processElement(ProcessContext c, BoundedWindow window) throws Exception {
-      sink.getDynamicDestinations().setSideInputAccessorFromProcessContext(c);
       PaneInfo paneInfo = c.pane();
       // If we are doing windowed writes, we need to ensure that we have separate files for
       // data in different windows/panes. Similar for dynamic writes, make sure that different
@@ -580,6 +579,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     @ProcessElement
     public void processElement(ProcessContext context) throws IOException {
+      sink.getDynamicDestinations().setSideInputAccessorFromProcessContext(context);
       final int shardCount;
       if (numShardsView != null) {
         shardCount = context.sideInput(numShardsView);
@@ -723,6 +723,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       } else {
         numShardsView = null;
       }
+      shardingSideInputs.addAll(sideInputs);
       PCollection<KV<ShardedKey<Integer>, Iterable<UserT>>> sharded =
           input
               .apply(

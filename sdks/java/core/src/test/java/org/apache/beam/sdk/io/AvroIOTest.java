@@ -19,7 +19,11 @@ package org.apache.beam.sdk.io;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static org.apache.avro.file.DataFileConstants.SNAPPY_CODEC;
+import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingOnlyShardIgnoringWindow;
+import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingShardTemplate;
 import static org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions.RESOLVE_FILE;
+import static org.apache.beam.sdk.transforms.Contextful.fn;
+import static org.apache.beam.sdk.transforms.Requirements.requiresSideInputs;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasItem;
@@ -40,6 +44,7 @@ import com.google.common.collect.Multimap;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -72,8 +77,10 @@ import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestStream;
 import org.apache.beam.sdk.testing.UsesTestStream;
 import org.apache.beam.sdk.testing.ValidatesRunner;
+import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.MapElements;
+import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.View;
@@ -103,17 +110,19 @@ import org.junit.runners.JUnit4;
 
 /** Tests for AvroIO Read and Write transforms. */
 @RunWith(JUnit4.class)
-public class AvroIOTest {
+public class AvroIOTest implements Serializable {
 
   @Rule
-  public TestPipeline writePipeline = TestPipeline.create();
+  public transient TestPipeline writePipeline = TestPipeline.create();
 
   @Rule
-  public TestPipeline readPipeline = TestPipeline.create();
+  public transient TestPipeline readPipeline = TestPipeline.create();
 
-  @Rule public TemporaryFolder tmpFolder = new TemporaryFolder();
+  @Rule public transient TestPipeline windowedAvroWritePipeline = TestPipeline.create();
 
-  @Rule public ExpectedException expectedException = ExpectedException.none();
+  @Rule public transient TemporaryFolder tmpFolder = new TemporaryFolder();
+
+  @Rule public transient ExpectedException expectedException = ExpectedException.none();
 
   @Test
   public void testAvroIOGetName() {
@@ -163,6 +172,17 @@ public class AvroIOTest {
       return new GenericClass(
           (int) input.get("intField"), input.get("stringField").toString());
     }
+  }
+
+  private enum Sharding {
+    RUNNER_DETERMINED,
+    WITHOUT_SHARDING,
+    FIXED_3_SHARDS
+  }
+
+  private enum WriteMethod {
+    AVROIO_WRITE,
+    AVROIO_SINK
   }
 
   @Test
@@ -504,59 +524,21 @@ public class AvroIOTest {
     readPipeline.run();
   }
 
-  private static class WindowedFilenamePolicy extends FilenamePolicy {
-    final ResourceId outputFilePrefix;
-
-    WindowedFilenamePolicy(ResourceId outputFilePrefix) {
-      this.outputFilePrefix = outputFilePrefix;
-    }
-
-    @Override
-    public ResourceId windowedFilename(
-        int shardNumber,
-        int numShards,
-        BoundedWindow window,
-        PaneInfo paneInfo,
-        OutputFileHints outputFileHints) {
-      String filenamePrefix =
-          outputFilePrefix.isDirectory() ? "" : firstNonNull(outputFilePrefix.getFilename(), "");
-
-      String filename =
-          String.format(
-              "%s-%s-%s-of-%s-pane-%s%s%s",
-              filenamePrefix,
-              window,
-              shardNumber,
-              numShards - 1,
-              paneInfo.getIndex(),
-              paneInfo.isLast() ? "-final" : "",
-              outputFileHints.getSuggestedFilenameSuffix());
-      return outputFilePrefix
-          .getCurrentDirectory()
-          .resolve(filename, RESOLVE_FILE);
-    }
-
-    @Override
-    public ResourceId unwindowedFilename(
-        int shardNumber, int numShards, OutputFileHints outputFileHints) {
-      throw new UnsupportedOperationException("Expecting windowed outputs only");
-    }
-
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
-      builder.add(
-          DisplayData.item("fileNamePrefix", outputFilePrefix.toString())
-              .withLabel("File Name Prefix"));
-    }
-  }
-
-  @Rule public TestPipeline windowedAvroWritePipeline = TestPipeline.create();
-
   @Test
   @Category({ValidatesRunner.class, UsesTestStream.class})
   public void testWindowedAvroIOWrite() throws Throwable {
+    testWindowedAvroIOWriteUsingMethod(WriteMethod.AVROIO_WRITE);
+  }
+
+  @Test
+  @Category({ValidatesRunner.class, UsesTestStream.class})
+  public void testWindowedAvroIOWriteViaSink() throws Throwable {
+    testWindowedAvroIOWriteUsingMethod(WriteMethod.AVROIO_SINK);
+  }
+
+  void testWindowedAvroIOWriteUsingMethod(WriteMethod method) throws IOException {
     Path baseDir = Files.createTempDirectory(tmpFolder.getRoot().toPath(), "testwrite");
-    String baseFilename = baseDir.resolve("prefix").toString();
+    final String baseFilename = baseDir.resolve("prefix").toString();
 
     Instant base = new Instant(0);
     ArrayList<GenericClass> allElements = new ArrayList<>();
@@ -605,18 +587,68 @@ public class AvroIOTest {
                 Arrays.copyOfRange(secondWindowArray, 1, secondWindowArray.length))
             .advanceWatermarkToInfinity();
 
-    FilenamePolicy policy =
-        new WindowedFilenamePolicy(FileBasedSink.convertToFileResourceIfPossible(baseFilename));
+    final PTransform<PCollection<GenericClass>, WriteFilesResult<Void>> write;
+    switch (method) {
+      case AVROIO_WRITE:
+        {
+          FilenamePolicy policy =
+              new FilenamePolicy() {
+                @Override
+                public ResourceId windowedFilename(
+                    int shardNumber,
+                    int numShards,
+                    BoundedWindow window,
+                    PaneInfo paneInfo,
+                    OutputFileHints outputFileHints) {
+                  IntervalWindow intervalWindow = (IntervalWindow) window;
+                  String filename =
+                      String.format(
+                          "%s-%s-%s-%s-of-%s-pane-%s-last",
+                          baseFilename,
+                          intervalWindow.start(),
+                          intervalWindow.end(),
+                          shardNumber,
+                          numShards,
+                          paneInfo.getIndex());
+                  return FileSystems.matchNewResource(filename, false /* isDirectory */);
+                }
+
+                @Override
+                public ResourceId unwindowedFilename(
+                    int shardNumber, int numShards, OutputFileHints outputFileHints) {
+                  throw new UnsupportedOperationException("Expecting windowed outputs only");
+                }
+              };
+          write =
+              AvroIO.write(GenericClass.class)
+                  .to(policy)
+                  .withTempDirectory(
+                      StaticValueProvider.of(
+                          FileSystems.matchNewResource(baseDir.toString(), true)))
+                  .withWindowedWrites()
+                  .withNumShards(2)
+                  .withOutputFilenames();
+          break;
+        }
+
+      case AVROIO_SINK:
+        {
+          write =
+              FileIO.<GenericClass>write()
+                  .via(AvroIO.sink(GenericClass.class))
+                  .to(nameFilesUsingShardTemplate(baseFilename, "-W-S-of-N-P"))
+                  .withTempDirectory(FileSystems.matchNewResource(baseDir.toString(), true))
+                  .withNumShards(2);
+          break;
+        }
+
+      default:
+        throw new UnsupportedOperationException();
+    }
     windowedAvroWritePipeline
         .apply(values)
         .apply(Window.<GenericClass>into(FixedWindows.of(Duration.standardMinutes(1))))
-        .apply(
-            AvroIO.write(GenericClass.class)
-                .to(policy)
-                .withTempDirectory(
-                    StaticValueProvider.of(FileSystems.matchNewResource(baseDir.toString(), true)))
-                .withWindowedWrites()
-                .withNumShards(2));
+        .apply(write);
     windowedAvroWritePipeline.run();
 
     // Validate that the data written matches the expected elements in the expected order
@@ -624,17 +656,11 @@ public class AvroIOTest {
     for (int shard = 0; shard < 2; shard++) {
       for (int window = 0; window < 2; window++) {
         Instant windowStart = new Instant(0).plus(Duration.standardMinutes(window));
-        IntervalWindow intervalWindow =
+        IntervalWindow interval =
             new IntervalWindow(windowStart, Duration.standardMinutes(1));
-        expectedFiles.add(
-            new File(
-                baseFilename
-                    + "-"
-                    + intervalWindow.toString()
-                    + "-"
-                    + shard
-                    + "-of-1"
-                    + "-pane-0-final"));
+        String shardStr =
+            interval.start() + "-" + interval.end() + "-" + shard + "-of-2-pane-0-last";
+        expectedFiles.add(new File(baseFilename + "-" + shardStr));
       }
     }
 
@@ -724,14 +750,9 @@ public class AvroIOTest {
     }
   }
 
-  private enum Sharding {
-    RUNNER_DETERMINED,
-    WITHOUT_SHARDING,
-    FIXED_3_SHARDS
-  }
-
-  private void testDynamicDestinationsWithSharding(Sharding sharding) throws Exception {
-    ResourceId baseDir =
+  private void testDynamicDestinationsUnwindowedWithSharding(
+      WriteMethod writeMethod, Sharding sharding) throws Exception {
+    final ResourceId baseDir =
         FileSystems.matchNewResource(
             Files.createTempDirectory(tmpFolder.getRoot().toPath(), "testDynamicDestinations")
                 .toString(),
@@ -747,32 +768,107 @@ public class AvroIOTest {
       expectedElements.put(
           prefix, createRecord(element, prefix, new Schema.Parser().parse(jsonSchema)));
     }
-    PCollectionView<Map<String, String>> schemaView =
+    final PCollectionView<Map<String, String>> schemaView =
         writePipeline
             .apply("createSchemaView", Create.of(schemaMap))
             .apply(View.<String, String>asMap());
 
     PCollection<String> input =
         writePipeline.apply("createInput", Create.of(elements).withCoder(StringUtf8Coder.of()));
-    AvroIO.TypedWrite<String, String, GenericRecord> write =
-        AvroIO.<String>writeCustomTypeToGenericRecords()
-            .to(new TestDynamicDestinations(baseDir, schemaView))
-            .withTempDirectory(baseDir);
 
-    switch (sharding) {
-      case RUNNER_DETERMINED:
+    switch (writeMethod) {
+      case AVROIO_WRITE: {
+        AvroIO.TypedWrite<String, String, GenericRecord> write =
+            AvroIO.<String>writeCustomTypeToGenericRecords()
+                .to(new TestDynamicDestinations(baseDir, schemaView))
+                .withTempDirectory(baseDir);
+
+        switch (sharding) {
+          case RUNNER_DETERMINED:
+            break;
+          case WITHOUT_SHARDING:
+            write = write.withoutSharding();
+            break;
+          case FIXED_3_SHARDS:
+            write = write.withNumShards(3);
+            break;
+          default:
+            throw new IllegalArgumentException("Unknown sharding " + sharding);
+        }
+
+        input.apply(write);
         break;
-      case WITHOUT_SHARDING:
-        write = write.withoutSharding();
-        break;
-      case FIXED_3_SHARDS:
-        write = write.withNumShards(3);
-        break;
-      default:
-        throw new IllegalArgumentException("Unknown sharding " + sharding);
+      }
+
+      case AVROIO_SINK:
+        {
+          final AvroIO.RecordFormatter<String> formatter =
+              new AvroIO.RecordFormatter<String>() {
+                @Override
+                public GenericRecord formatRecord(String element, Schema schema) {
+                  String prefix = element.substring(0, 1);
+                  GenericRecord record = new GenericData.Record(schema);
+                  record.put(prefix + "full", element);
+                  record.put(prefix + "suffix", element.substring(1));
+                  return record;
+                }
+              };
+          FileIO.Write<String, String> write =
+              FileIO.<String, String>writeDynamic()
+                  .by(
+                      fn(
+                          new Contextful.Fn<String, String>() {
+                            @Override
+                            public String apply(String element, Context c) {
+                              c.sideInput(schemaView); // Ignore result
+                              return element.substring(0, 1);
+                            }
+                          },
+                          requiresSideInputs(schemaView)))
+                  .via(
+                      fn(
+                          new Contextful.Fn<String, FileIO.Sink<String>>() {
+                            @Override
+                            public FileIO.Sink<String> apply(String dest, Context c) {
+                              Schema schema =
+                                  new Schema.Parser().parse(c.sideInput(schemaView).get(dest));
+                              return AvroIO.sinkViaGenericRecords(schema, formatter);
+                            }
+                          },
+                          requiresSideInputs(schemaView)))
+                  .to(
+                      fn(
+                          new Contextful.Fn<String, FileIO.Write.FilenamePolicy>() {
+                            @Override
+                            public FileIO.Write.FilenamePolicy apply(String dest, Context c) {
+                              c.sideInput(schemaView); // Ignore result
+                              return nameFilesUsingOnlyShardIgnoringWindow(
+                                  baseDir
+                                      .resolve("file_" + dest + ".txt", RESOLVE_FILE)
+                                      .toString());
+                            }
+                          },
+                          requiresSideInputs(schemaView)))
+                  .withTempDirectory(baseDir)
+                  .withIgnoreWindowing();
+          switch (sharding) {
+            case RUNNER_DETERMINED:
+              break;
+            case WITHOUT_SHARDING:
+              write = write.withNumShards(1);
+              break;
+            case FIXED_3_SHARDS:
+              write = write.withNumShards(3);
+              break;
+            default:
+              throw new IllegalArgumentException("Unknown sharding " + sharding);
+          }
+
+          input.apply(write);
+          break;
+        }
     }
 
-    input.apply(write);
     writePipeline.run();
 
     // Validate that the data written matches the expected elements in the expected order.
@@ -807,19 +903,42 @@ public class AvroIOTest {
   @Test
   @Category(NeedsRunner.class)
   public void testDynamicDestinationsRunnerDeterminedSharding() throws Exception {
-    testDynamicDestinationsWithSharding(Sharding.RUNNER_DETERMINED);
+    testDynamicDestinationsUnwindowedWithSharding(
+        WriteMethod.AVROIO_WRITE, Sharding.RUNNER_DETERMINED);
   }
 
   @Test
   @Category(NeedsRunner.class)
   public void testDynamicDestinationsWithoutSharding() throws Exception {
-    testDynamicDestinationsWithSharding(Sharding.WITHOUT_SHARDING);
+    testDynamicDestinationsUnwindowedWithSharding(
+        WriteMethod.AVROIO_WRITE, Sharding.WITHOUT_SHARDING);
   }
 
   @Test
   @Category(NeedsRunner.class)
   public void testDynamicDestinationsWithNumShards() throws Exception {
-    testDynamicDestinationsWithSharding(Sharding.FIXED_3_SHARDS);
+    testDynamicDestinationsUnwindowedWithSharding(
+        WriteMethod.AVROIO_WRITE, Sharding.FIXED_3_SHARDS);
+  }
+
+  @Test
+  @Category(NeedsRunner.class)
+  public void testDynamicDestinationsViaSinkRunnerDeterminedSharding() throws Exception {
+    testDynamicDestinationsUnwindowedWithSharding(
+        WriteMethod.AVROIO_SINK, Sharding.RUNNER_DETERMINED);
+  }
+
+  @Test
+  @Category(NeedsRunner.class)
+  public void testDynamicDestinationsViaSinkWithoutSharding() throws Exception {
+    testDynamicDestinationsUnwindowedWithSharding(
+        WriteMethod.AVROIO_SINK, Sharding.WITHOUT_SHARDING);
+  }
+
+  @Test
+  @Category(NeedsRunner.class)
+  public void testDynamicDestinationsViaSinkWithNumShards() throws Exception {
+    testDynamicDestinationsUnwindowedWithSharding(WriteMethod.AVROIO_SINK, Sharding.FIXED_3_SHARDS);
   }
 
   @Test

@@ -20,18 +20,28 @@ package org.apache.beam.sdk.io;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.beam.sdk.io.FileIO.ReadMatches.DirectoryTreatment;
+import static org.apache.beam.sdk.transforms.Contextful.fn;
+import static org.apache.beam.sdk.transforms.Requirements.requiresSideInputs;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import java.io.IOException;
+import java.io.Serializable;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
+import org.apache.avro.file.DataFileWriter;
+import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.reflect.ReflectData;
+import org.apache.avro.reflect.ReflectDatumWriter;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.coders.AvroCoder;
@@ -46,14 +56,17 @@ import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
+import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.Requirements;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.SerializableFunctions;
 import org.apache.beam.sdk.transforms.Watch.Growth.TerminationCondition;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptors;
 import org.joda.time.Duration;
@@ -79,8 +92,8 @@ import org.joda.time.Duration;
  * allows them in case the filepattern contains a glob wildcard character. Use {@link
  * Read#withEmptyMatchTreatment} to configure this behavior.
  *
- * <p>By default, the filepatterns are expanded only once. {@link Read#watchForNewFiles}
- * allows streaming of new files matching the filepattern(s).
+ * <p>By default, the filepatterns are expanded only once. {@link Read#watchForNewFiles} allows
+ * streaming of new files matching the filepattern(s).
  *
  * <h3>Reading records of a known schema</h3>
  *
@@ -144,6 +157,7 @@ import org.joda.time.Duration;
  * }</pre>
  *
  * <h3>Streaming new files matching a filepattern</h3>
+ *
  * <pre>{@code
  * Pipeline p = ...;
  *
@@ -1162,16 +1176,50 @@ public class AvroIO {
       if (tempDirectory == null) {
         tempDirectory = getFilenamePrefix();
       }
-      WriteFiles<UserT, DestinationT, OutputT> write =
-          WriteFiles.to(
-              new AvroSink<>(tempDirectory, resolveDynamicDestinations(), getGenericRecords()));
+      final DynamicAvroDestinations<UserT, DestinationT, OutputT> dynamicDestinations =
+          resolveDynamicDestinations();
+
+      Coder<DestinationT> destinationCoder;
+      try {
+        destinationCoder = dynamicDestinations.getDestinationCoderWithDefault(
+            input.getPipeline().getCoderRegistry());
+      } catch (CannotProvideCoderException e) {
+        throw new RuntimeException(e);
+      }
+      FileIO.Write<DestinationT, UserT> write =
+          FileIO.<DestinationT, UserT>writeDynamic()
+              .by(fn(
+                  new DestinationFnViaDynamicDestinations<>(dynamicDestinations),
+                  requiresSideInputs(dynamicDestinations.getSideInputs())))
+              .via(fn(
+                  new SinkFnViaDynamicDestinations<>(
+                      dynamicDestinations, getGenericRecords(), getCodec(), getMetadata()),
+                  requiresSideInputs(dynamicDestinations.getSideInputs())))
+              .to(fn(
+                  new FilenamePolicyFnViaDynamicDestinations<>(
+                      getWindowedWrites(), dynamicDestinations),
+                  requiresSideInputs(dynamicDestinations.getSideInputs())))
+              .withDestinationCoder(
+                  destinationCoder)
+              .withEmptyGlobalWindowDestination(dynamicDestinations.getDefaultDestination())
+              .withTempDirectory(tempDirectory);
       if (getNumShards() > 0) {
         write = write.withNumShards(getNumShards());
       }
-      if (getWindowedWrites()) {
-        write = write.withWindowedWrites();
+      if (!getWindowedWrites()) {
+        write = write.withIgnoreWindowing();
       }
       return input.apply("Write", write);
+    }
+
+    static FileBasedSink.DynamicDestinations.SideInputAccessor sideInputAccessorFromContext(
+        final Contextful.Fn.Context c) {
+      return new FileBasedSink.DynamicDestinations.SideInputAccessor() {
+        @Override
+        public <SideInputT> SideInputT sideInput(PCollectionView<SideInputT> view) {
+          return c.sideInput(view);
+        }
+      };
     }
 
     @Override
@@ -1184,6 +1232,108 @@ public class AvroIO {
           .addIfNotNull(
               DisplayData.item("tempDirectory", getTempDirectory())
                   .withLabel("Directory for temporary files"));
+    }
+
+    private static class DestinationFnViaDynamicDestinations<UserT, DestinationT>
+        implements Contextful.Fn<UserT, DestinationT> {
+      private final DynamicAvroDestinations<UserT, DestinationT, ?> dynamicDestinations;
+
+      public DestinationFnViaDynamicDestinations(
+          DynamicAvroDestinations<UserT, DestinationT, ?> dynamicDestinations) {
+        this.dynamicDestinations = dynamicDestinations;
+      }
+
+      @Override
+      public DestinationT apply(UserT input, final Context c) {
+        dynamicDestinations.setSideInputAccessor(sideInputAccessorFromContext(c));
+        return dynamicDestinations.getDestination(input);
+      }
+    }
+    private static class SinkFnViaDynamicDestinations<UserT, DestinationT>
+        implements Contextful.Fn<DestinationT, FileIO.Sink<UserT>> {
+      private final boolean genericRecords;
+      private final SerializableAvroCodecFactory codec;
+      private final ImmutableMap<String, Object> metadata;
+      private final DynamicAvroDestinations<UserT, DestinationT, ?> dynamicDestinations;
+
+      private SinkFnViaDynamicDestinations(
+          DynamicAvroDestinations<UserT, DestinationT, ?> dynamicDestinations,
+          boolean genericRecords,
+          SerializableAvroCodecFactory codec,
+          ImmutableMap<String, Object> metadata) {
+        this.dynamicDestinations = dynamicDestinations;
+        this.genericRecords = genericRecords;
+        this.codec = codec;
+        this.metadata = metadata;
+      }
+
+      @Override
+      public FileIO.Sink<UserT> apply(DestinationT dest, final Context c) {
+        Sink sink;
+        dynamicDestinations.setSideInputAccessor(
+            new FileBasedSink.DynamicDestinations.SideInputAccessor() {
+              @Override
+              public <SideInputT> SideInputT sideInput(PCollectionView<SideInputT> view) {
+                return c.sideInput(view);
+              }
+            });
+        Schema schema = dynamicDestinations.getSchema(dest);
+        if (genericRecords) {
+          sink =
+              sinkViaGenericRecords(
+                  schema,
+                  new RecordFormatter<UserT>() {
+                    @Override
+                    public GenericRecord formatRecord(UserT element, Schema schema) {
+                      dynamicDestinations.setSideInputAccessor(sideInputAccessorFromContext(c));
+                      return (GenericRecord) dynamicDestinations.formatRecord(element);
+                    }
+                  });
+        } else {
+          sink = AvroIO.<UserT>sink(ReflectData.get().getClass(schema));
+        }
+        return sink.withCodec(codec.getCodec()).withMetadata(metadata);
+      }
+    }
+    private static class FilenamePolicyFnViaDynamicDestinations<DestinationT>
+        implements Contextful.Fn<DestinationT, FileIO.Write.FilenamePolicy> {
+      private final boolean windowedWrites;
+      private final DynamicAvroDestinations<?, DestinationT, ?> dynamicDestinations;
+
+      public FilenamePolicyFnViaDynamicDestinations(
+          boolean windowedWrites,
+          DynamicAvroDestinations<?, DestinationT, ?> dynamicDestinations) {
+        this.windowedWrites = windowedWrites;
+        this.dynamicDestinations = dynamicDestinations;
+      }
+
+      @Override
+      public FileIO.Write.FilenamePolicy apply(DestinationT input, final Context c) {
+        dynamicDestinations.setSideInputAccessor(
+            new FileBasedSink.DynamicDestinations.SideInputAccessor() {
+              @Override
+              public <SideInputT> SideInputT sideInput(PCollectionView<SideInputT> view) {
+                return c.sideInput(view);
+              }
+            });
+        final FilenamePolicy policy = dynamicDestinations.getFilenamePolicy(input);
+        return new FileIO.Write.FilenamePolicy() {
+          @Override
+          public ResourceId getFilename(FileIO.Write.FilenameContext context) {
+            return windowedWrites
+                ? policy.windowedFilename(
+                context.getShardIndex(),
+                context.getNumShards(),
+                context.getWindow(),
+                context.getPane(),
+                FileBasedSink.CompressionType.fromCanonical(context.getCompression()))
+                : policy.unwindowedFilename(
+                context.getShardIndex(),
+                context.getNumShards(),
+                FileBasedSink.CompressionType.fromCanonical(context.getCompression()));
+          }
+        };
+      }
     }
   }
 
@@ -1305,7 +1455,7 @@ public class AvroIO {
 
     @Override
     public PDone expand(PCollection<T> input) {
-      inner.expand(input);
+      input.apply(inner);
       return PDone.in(input.getPipeline());
     }
 
@@ -1328,6 +1478,117 @@ public class AvroIO {
     return new ConstantAvroDestination<>(filenamePolicy, schema, metadata, codec, formatFunction);
   }
   /////////////////////////////////////////////////////////////////////////////
+
+  public abstract static class RecordFormatter<ElementT> implements Serializable {
+    public abstract GenericRecord formatRecord(ElementT element, Schema schema);
+  }
+
+  /**
+   * A {@link Sink} for use with {@link FileIO#write} and {@link FileIO#writeDynamic}, writing
+   * elements of the given generated class, like {@link #write(Class)}.
+   */
+  public static <ElementT> Sink<ElementT> sink(final Class<ElementT> clazz) {
+    return new AutoValue_AvroIO_Sink.Builder<ElementT>()
+        .setJsonSchema(ReflectData.get().getSchema(clazz).toString())
+        .setMetadata(ImmutableMap.<String, Object>of())
+        .setCodec(TypedWrite.DEFAULT_SERIALIZABLE_CODEC)
+        .build();
+  }
+
+  /**
+   * A {@link Sink} for use with {@link FileIO#write} and {@link FileIO#writeDynamic}, writing
+   * elements by converting each one to a {@link GenericRecord} with a given (common) schema, like
+   * {@link #writeCustomTypeToGenericRecords()}.
+   */
+  public static <ElementT> Sink<ElementT> sinkViaGenericRecords(
+      Schema schema, RecordFormatter<ElementT> formatter) {
+    return new AutoValue_AvroIO_Sink.Builder<ElementT>()
+        .setRecordFormatter(formatter)
+        .setJsonSchema(schema.toString())
+        .setMetadata(ImmutableMap.<String, Object>of())
+        .setCodec(TypedWrite.DEFAULT_SERIALIZABLE_CODEC)
+        .build();
+  }
+
+  /** Implementation of {@link #sink} and {@link #sinkViaGenericRecords}. */
+  @AutoValue
+  public abstract static class Sink<ElementT> implements FileIO.Sink<ElementT> {
+    @Nullable abstract RecordFormatter<ElementT> getRecordFormatter();
+    @Nullable abstract String getJsonSchema();
+    abstract Map<String, Object> getMetadata();
+    abstract SerializableAvroCodecFactory getCodec();
+
+    abstract Builder<ElementT> toBuilder();
+
+    @AutoValue.Builder
+    abstract static class Builder<ElementT> {
+      abstract Builder<ElementT> setRecordFormatter(RecordFormatter<ElementT> formatter);
+      abstract Builder<ElementT> setJsonSchema(String jsonSchema);
+      abstract Builder<ElementT> setMetadata(Map<String, Object> metadata);
+      abstract Builder<ElementT> setCodec(SerializableAvroCodecFactory codec);
+
+      abstract Sink<ElementT> build();
+    }
+
+    /** Specifies to put the given metadata into each generated file. By default, empty. */
+    public Sink<ElementT> withMetadata(Map<String, Object> metadata) {
+      return toBuilder().setMetadata(metadata).build();
+    }
+
+    /**
+     * Specifies to use the given {@link CodecFactory} for each generated file. By default, {@code
+     * CodecFactory.deflateCodec(6)}.
+     */
+    public Sink<ElementT> withCodec(CodecFactory codec) {
+      return toBuilder().setCodec(new SerializableAvroCodecFactory(codec)).build();
+    }
+
+    private transient Schema schema;
+    private transient DataFileWriter<ElementT> reflectWriter;
+    private transient DataFileWriter<GenericRecord> genericWriter;
+
+    @Override
+    public void open(WritableByteChannel channel) throws IOException {
+      this.schema = new Schema.Parser().parse(getJsonSchema());
+      DataFileWriter<?> writer;
+      if (getRecordFormatter() == null) {
+        writer = reflectWriter = new DataFileWriter<>(new ReflectDatumWriter<ElementT>(schema));
+      } else {
+        writer =
+            genericWriter = new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema));
+      }
+      writer.setCodec(getCodec().getCodec());
+      for (Map.Entry<String, Object> entry : getMetadata().entrySet()) {
+        Object v = entry.getValue();
+        if (v instanceof String) {
+          writer.setMeta(entry.getKey(), (String) v);
+        } else if (v instanceof Long) {
+          writer.setMeta(entry.getKey(), (Long) v);
+        } else if (v instanceof byte[]) {
+          writer.setMeta(entry.getKey(), (byte[]) v);
+        } else {
+          throw new IllegalStateException(
+              "Metadata value type must be one of String, Long, or byte[]. Found "
+                  + v.getClass().getSimpleName());
+        }
+      }
+      writer.create(schema, Channels.newOutputStream(channel));
+    }
+
+    @Override
+    public void write(ElementT element) throws IOException {
+      if (getRecordFormatter() == null) {
+        reflectWriter.append(element);
+      } else {
+        genericWriter.append(getRecordFormatter().formatRecord(element, schema));
+      }
+    }
+
+    @Override
+    public void flush() throws IOException {
+      MoreObjects.firstNonNull(reflectWriter, genericWriter).flush();
+    }
+  }
 
   /** Disallow construction of utility class. */
   private AvroIO() {}
