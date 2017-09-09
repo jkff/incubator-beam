@@ -42,6 +42,7 @@ import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
+import org.apache.beam.sdk.transforms.SerializableFunctions;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
@@ -76,6 +77,44 @@ public final class DefaultFilenamePolicy extends FilenamePolicy {
    * pattern for both windowed and non-windowed file names.
    */
   private static final Pattern SHARD_FORMAT_RE = Pattern.compile("(S+|N+|W|P)");
+
+  static FileIO.Write.FilenamePolicy toFileIOWriteFilenamePolicy(
+      final boolean windowedWrites,
+      @Nullable final FilenamePolicy legacyFilenamePolicy,
+      ValueProvider<ResourceId> filenamePrefixProvider,
+      String shardTemplate,
+      String filenameSuffix) {
+    if (legacyFilenamePolicy == null) {
+      ValueProvider<String> filenamePrefix = ValueProvider.NestedValueProvider.of(
+          filenamePrefixProvider, SerializableFunctions.<ResourceId>stringValueOf());
+      if (shardTemplate == null) {
+        return windowedWrites
+            ? FileIO.Write.nameFilesUsingWindowPaneAndShard(filenamePrefix, filenameSuffix)
+            : FileIO.Write.nameFilesUsingOnlyShardIgnoringWindow(
+                filenamePrefix, filenameSuffix);
+      } else {
+        return FileIO.Write.nameFilesUsingShardTemplate(
+            filenamePrefix, shardTemplate, filenameSuffix);
+      }
+    } else {
+      return new FileIO.Write.FilenamePolicy() {
+        @Override
+        public ResourceId getFilename(FileIO.Write.FilenameContext context) {
+          return windowedWrites
+              ? legacyFilenamePolicy.windowedFilename(
+              context.getShardIndex(),
+              context.getNumShards(),
+              context.getWindow(),
+              context.getPane(),
+              FileBasedSink.CompressionType.fromCanonical(context.getCompression()))
+              : legacyFilenamePolicy.unwindowedFilename(
+              context.getShardIndex(),
+              context.getNumShards(),
+              FileBasedSink.CompressionType.fromCanonical(context.getCompression()));
+        }
+      };
+    }
+  }
 
   /**
    * Encapsulates constructor parameters to {@link DefaultFilenamePolicy}.

@@ -151,8 +151,8 @@ import org.slf4j.LoggerFactory;
  *     filenames can depend on a variety of inputs, e.g. the window, the pane, total number of
  *     shards and the current file's shard index, etc. - see {@link Write.FilenameContext}. The
  *     standard policies are {@link Write#nameFilesUsingWindowPaneAndShard} and {@link
- *     Write#nameFilesUsingOnlyShardIgnoringWindow(String)}. A concise way to create a custom policy
- *     is {@link Write#nameFilesUsingShardTemplate(String, String)}.
+ *     Write#nameFilesUsingOnlyShardIgnoringWindow}. A concise way to create a custom policy
+ *     is {@link Write#nameFilesUsingShardTemplate}.
  * <li><b>Which elements go into which shard:</b> It is not possible to control this - elements
  *     within a window get distributed into different shards created for that window arbitrarily,
  *     though {@link FileIO.Write} attempts to make shards approximately evenly sized. For more
@@ -1063,6 +1063,9 @@ public class FileIO {
 
     @Override
     public WriteFilesResult<DestinationT> expand(PCollection<UserT> input) {
+      checkArgument(getSinkFn() != null, ".via() is required");
+      checkArgument(getFilenamePolicyFn() != null, ".to() is required");
+      checkArgument(getTempDirectoryProvider() != null, ".withTempDirectory() is required");
       Coder<DestinationT> destinationCoder = getDestinationCoder();
       if (destinationCoder == null) {
         TypeDescriptor<DestinationT> destinationT =

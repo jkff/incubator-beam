@@ -783,7 +783,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
                           for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
                               results.asMap().entrySet()) {
                             LOG.info(
-                                "Finalizing write operation {}"
+                                "Finalizing write operation {} "
                                     + " for destination {} num shards {} window {} pane {}.",
                                 writeOperation,
                                 entry.getKey(),
@@ -792,6 +792,11 @@ public class WriteFiles<UserT, DestinationT, OutputT>
                                 c.pane());
                             Map<ResourceId, ResourceId> finalizeMap =
                                 writeOperation.finalize(entry.getValue());
+                            if (!finalizeMap.isEmpty()) {
+                              LOG.info(
+                                  "Example output file: at {}",
+                                  finalizeMap.values().iterator().next());
+                            }
                             tempFiles.addAll(finalizeMap.keySet());
                             for (ResourceId outputFile : finalizeMap.values()) {
                               c.output(KV.of(entry.getKey(), outputFile.toString()));
@@ -895,7 +900,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     checkState(!windowedWrites);
 
     LOG.info(
-        "Finalizing write operation {} for destination {} num shards {}.",
+        "Finalizing write operation {}: for destination {} num shards {}.",
         writeOperation,
         destination,
         results.size());
@@ -918,6 +923,11 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       LOG.debug("Done creating extra shards for {}.", destination);
     }
     Map<ResourceId, ResourceId> finalizeMap = writeOperation.finalize(results);
+    if (!finalizeMap.isEmpty()) {
+      LOG.info(
+          "Example output file: at {}",
+          finalizeMap.values().iterator().next());
+    }
     LOG.debug("Done finalizing write operation {} for destination {}", writeOperation, destination);
     return finalizeMap;
   }

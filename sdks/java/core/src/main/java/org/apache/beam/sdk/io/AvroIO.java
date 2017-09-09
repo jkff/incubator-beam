@@ -20,9 +20,6 @@ package org.apache.beam.sdk.io;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.beam.sdk.io.FileIO.ReadMatches.DirectoryTreatment;
-import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingOnlyShardIgnoringWindow;
-import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingShardTemplate;
-import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingWindowPaneAndShard;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
@@ -60,11 +57,11 @@ import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.SerializableFunction;
-import org.apache.beam.sdk.transforms.SerializableFunctions;
 import org.apache.beam.sdk.transforms.Watch.Growth.TerminationCondition;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptors;
 import org.joda.time.Duration;
 
@@ -815,8 +812,7 @@ public class AvroIO {
 
   /** Implementation of {@link #write}. */
   @AutoValue
-  public abstract static class Write<UserT>
-      extends PTransform<PCollection<UserT>, WriteFilesResult<Void>> {
+  public abstract static class Write<UserT> extends PTransform<PCollection<UserT>, PDone> {
     static final CodecFactory DEFAULT_CODEC = CodecFactory.deflateCodec(6);
     static final SerializableAvroCodecFactory DEFAULT_SERIALIZABLE_CODEC =
         new SerializableAvroCodecFactory(DEFAULT_CODEC);
@@ -1057,7 +1053,7 @@ public class AvroIO {
     }
 
     @Override
-    public WriteFilesResult<Void> expand(PCollection<UserT> input) {
+    public PDone expand(PCollection<UserT> input) {
       checkArgument(
           getFilenamePrefix() != null || getTempDirectory() != null,
           "Need to set either the filename prefix or the tempDirectory of a AvroIO.Write "
@@ -1086,26 +1082,12 @@ public class AvroIO {
         sink = sink((Class<UserT>) ReflectData.get().getClass(getSchema()));
       }
       sink = sink.withCodec(getCodec()).withMetadata(getMetadata());
-      FileIO.Write.FilenamePolicy policy;
-      if (getFilenamePolicy() == null) {
-        ValueProvider<String> filenamePrefix = NestedValueProvider.of(
-            getFilenamePrefix(), SerializableFunctions.<ResourceId>stringValueOf());
-        if (getShardTemplate() == null) {
-          policy = getWindowedWrites()
-              ? nameFilesUsingWindowPaneAndShard(filenamePrefix, getFilenameSuffix())
-              : nameFilesUsingOnlyShardIgnoringWindow(
-                  filenamePrefix, getFilenameSuffix());
-        } else {
-          policy = nameFilesUsingShardTemplate(
-              filenamePrefix, getShardTemplate(), getFilenameSuffix());
-        }
-      } else {
-        policy = new FilenamePolicyAdapter(getWindowedWrites(), getFilenamePolicy());
-      }
       FileIO.Write<Void, UserT> write =
           FileIO.<UserT>write()
               .via(sink)
-              .to(policy)
+              .to(DefaultFilenamePolicy.toFileIOWriteFilenamePolicy(
+                  getWindowedWrites(), getFilenamePolicy(), getFilenamePrefix(), getShardTemplate(),
+                  getFilenameSuffix()))
               .withTempDirectory(tempDirectory);
       if (getNumShards() > 0) {
         write = write.withNumShards(getNumShards());
@@ -1113,7 +1095,8 @@ public class AvroIO {
       if (!getWindowedWrites()) {
         write = write.withIgnoreWindowing();
       }
-      return input.apply("Write", write);
+      input.apply("Write", write);
+      return PDone.in(input.getPipeline());
     }
 
     @Override
@@ -1127,32 +1110,6 @@ public class AvroIO {
                   .withLabel("Directory for temporary files"));
     }
 
-    private static class FilenamePolicyAdapter implements FileIO.Write.FilenamePolicy {
-      private final boolean windowedWrites;
-      private final FilenamePolicy legacyPolicy;
-
-      public FilenamePolicyAdapter(
-          boolean windowedWrites,
-          FilenamePolicy legacyPolicy) {
-        this.windowedWrites = windowedWrites;
-        this.legacyPolicy = checkNotNull(legacyPolicy);
-      }
-
-      @Override
-      public ResourceId getFilename(FileIO.Write.FilenameContext context) {
-        return windowedWrites
-            ? legacyPolicy.windowedFilename(
-            context.getShardIndex(),
-            context.getNumShards(),
-            context.getWindow(),
-            context.getPane(),
-            FileBasedSink.CompressionType.fromCanonical(context.getCompression()))
-            : legacyPolicy.unwindowedFilename(
-            context.getShardIndex(),
-            context.getNumShards(),
-            FileBasedSink.CompressionType.fromCanonical(context.getCompression()));
-      }
-    }
   }
 
   /////////////////////////////////////////////////////////////////////////////

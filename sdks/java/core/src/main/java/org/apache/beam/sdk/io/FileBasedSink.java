@@ -118,8 +118,10 @@ import org.slf4j.LoggerFactory;
  * <p>Supported file systems are those registered with {@link FileSystems}.
  *
  * @param <OutputT> the type of values written to the sink.
+ * @deprecated Use {@link FileIO#write} and {@link FileIO#writeDynamic} instead.
  */
 @Experimental(Kind.FILESYSTEM)
+@Deprecated
 public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     implements Serializable, HasDisplayData {
   private static final Logger LOG = LoggerFactory.getLogger(FileBasedSink.class);
@@ -971,12 +973,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
         LOG.error("Finishing write to {} failed, closing channel.", outputFile, e);
         closeChannelAndThrow(channel, outputFile, e);
       }
-
-      checkState(
-          channel.isOpen(),
-          "Channel %s to %s should only be closed by its owner: %s",
-          channel,
-          outputFile);
 
       LOG.debug("Closing channel to {}.", outputFile);
       try {

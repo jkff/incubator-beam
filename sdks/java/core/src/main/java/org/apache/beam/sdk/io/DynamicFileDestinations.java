@@ -76,52 +76,6 @@ public class DynamicFileDestinations {
     }
   }
 
-  /**
-   * A base class for a {@link DynamicDestinations} object that returns differently-configured
-   * instances of {@link DefaultFilenamePolicy}.
-   */
-  private static class DefaultPolicyDestinations<UserT, OutputT>
-      extends DynamicDestinations<UserT, Params, OutputT> {
-    private final SerializableFunction<UserT, Params> destinationFunction;
-    private final Params emptyDestination;
-    private final SerializableFunction<UserT, OutputT> formatFunction;
-
-    public DefaultPolicyDestinations(
-        SerializableFunction<UserT, Params> destinationFunction,
-        Params emptyDestination,
-        SerializableFunction<UserT, OutputT> formatFunction) {
-      this.destinationFunction = destinationFunction;
-      this.emptyDestination = emptyDestination;
-      this.formatFunction = formatFunction;
-    }
-
-    @Override
-    public OutputT formatRecord(UserT record) {
-      return formatFunction.apply(record);
-    }
-
-    @Override
-    public Params getDestination(UserT element) {
-      return destinationFunction.apply(element);
-    }
-
-    @Override
-    public Params getDefaultDestination() {
-      return emptyDestination;
-    }
-
-    @Nullable
-    @Override
-    public Coder<Params> getDestinationCoder() {
-      return ParamsCoder.of();
-    }
-
-    @Override
-    public FilenamePolicy getFilenamePolicy(DefaultFilenamePolicy.Params params) {
-      return DefaultFilenamePolicy.fromParams(params);
-    }
-  }
-
   /** Returns a {@link DynamicDestinations} that always returns the same {@link FilenamePolicy}. */
   public static <UserT, OutputT> DynamicDestinations<UserT, Void, OutputT> constant(
       FilenamePolicy filenamePolicy, SerializableFunction<UserT, OutputT> formatFunction) {
@@ -135,16 +89,5 @@ public class DynamicFileDestinations {
   public static <UserT> DynamicDestinations<UserT, Void, UserT> constant(
       FilenamePolicy filenamePolicy) {
     return new ConstantFilenamePolicy<>(filenamePolicy, SerializableFunctions.<UserT>identity());
-  }
-
-  /**
-   * Returns a {@link DynamicDestinations} that returns instances of {@link DefaultFilenamePolicy}
-   * configured with the given {@link Params}.
-   */
-  public static <UserT, OutputT> DynamicDestinations<UserT, Params, OutputT> toDefaultPolicies(
-      SerializableFunction<UserT, Params> destinationFunction,
-      Params emptyDestination,
-      SerializableFunction<UserT, OutputT> formatFunction) {
-    return new DefaultPolicyDestinations<>(destinationFunction, emptyDestination, formatFunction);
   }
 }
