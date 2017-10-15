@@ -262,10 +262,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
       return sideInputAccessor.sideInput(view);
     }
 
-    final void setSideInputAccessor(SideInputAccessor sideInputAccessor) {
-      this.sideInputAccessor = sideInputAccessor;
-    }
-
     final void setSideInputAccessorFromProcessContext(DoFn<?, ?>.ProcessContext context) {
       this.sideInputAccessor = new SideInputAccessorViaProcessContext(context);
     }

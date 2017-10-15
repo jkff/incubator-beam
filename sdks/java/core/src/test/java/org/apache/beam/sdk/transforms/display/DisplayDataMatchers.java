@@ -121,11 +121,15 @@ public class DisplayDataMatchers {
 
   private static Matcher<DisplayData> hasDisplayItem(
       String key, DisplayData.Type type, Object value) {
-    DisplayData.FormattedItemValue formattedValue = type.format(value);
-    return hasDisplayItem(allOf(
+    return hasDisplayItem(isDisplayItem(key, type, value));
+  }
+
+  /** Matches a {@link DisplayData.Item} with the given key, type and value. */
+  public static Matcher<Item> isDisplayItem(String key, DisplayData.Type type, Object value) {
+    return allOf(
         hasKey(key),
         hasType(type),
-        hasValue(formattedValue.getLongValue())));
+        hasValue(type.format(value).getLongValue()));
   }
 
   /**

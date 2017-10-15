@@ -18,6 +18,7 @@
 package org.apache.beam.sdk.io;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
+import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
@@ -129,16 +130,19 @@ public final class DefaultFilenamePolicy extends FilenamePolicy {
 
     /** Like {@link #withBaseFilename(ResourceId)}, but takes in a {@link ValueProvider}. */
     public Params withBaseFilename(ValueProvider<ResourceId> baseFilename) {
+      checkArgument(baseFilename != null, "baseFilename can not be null");
       return new Params(baseFilename, shardTemplate, suffix, explicitTemplate);
     }
 
     /** Sets the shard template. */
     public Params withShardTemplate(String shardTemplate) {
+      checkArgument(shardTemplate != null, "shardTemplate can not be null");
       return new Params(baseFilename, shardTemplate, suffix, true);
     }
 
     /** Sets the suffix. */
     public Params withSuffix(String suffix) {
+      checkArgument(suffix != null, "suffix can not be null");
       return new Params(baseFilename, shardTemplate, suffix, explicitTemplate);
     }
 

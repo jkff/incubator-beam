@@ -43,6 +43,7 @@ import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.ValueProvider;
+import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.Contextful.Fn;
 import org.apache.beam.sdk.transforms.Create;
@@ -455,7 +456,7 @@ public class FileIO {
 
     /** Matches the given filepattern. */
     public Match filepattern(String filepattern) {
-      return this.filepattern(ValueProvider.StaticValueProvider.of(filepattern));
+      return this.filepattern(StaticValueProvider.of(filepattern));
     }
 
     /** Like {@link #filepattern(String)} but using a {@link ValueProvider}. */
@@ -719,8 +720,10 @@ public class FileIO {
     }
 
     /**
-     * Generates filenames by concatenating prefix and filling information in the shard template.
+     * Generates filenames by concatenating the given prefix, shard (according to the given shard
+     * template), and suffix.
      *
+     * <p>In the shard template:
      * <ul>
      *   <li>N stands for {@link FilenameContext#getNumShards()}. NNN stands for formatting it into
      *       3 digits, e.g. 042.
@@ -731,11 +734,21 @@ public class FileIO {
      * </ul>
      */
     public static FilenamePolicy nameFilesUsingShardTemplate(
-        final String prefix, final String shardTempate) {
+        String prefix, String shardTemplate, String suffix) {
+      return nameFilesUsingShardTemplate(StaticValueProvider.of(prefix), shardTemplate, suffix);
+    }
+
+    /**
+     * Like {@link #nameFilesUsingShardTemplate(String, String, String)},
+     * but with a {@link ValueProvider} for the prefix.
+     */
+    public static FilenamePolicy nameFilesUsingShardTemplate(
+        final ValueProvider<String> prefix, final String shardTempate, final String suffix) {
       final DefaultFilenamePolicy policy =
           new DefaultFilenamePolicy(
               new DefaultFilenamePolicy.Params()
-                  .withBaseFilename(FileSystems.matchNewResource(prefix, false /* isDirectory */))
+                  .withBaseFilename(toResource(prefix))
+                  .withSuffix(suffix)
                   .withShardTemplate(shardTempate));
       return new FilenamePolicy() {
         @Override
@@ -750,29 +763,61 @@ public class FileIO {
       };
     }
 
-    /**
-     * Generates filenames as {@link #nameFilesUsingShardTemplate(String, String)} with a shard
-     * template of {@link DefaultFilenamePolicy#DEFAULT_WINDOWED_SHARD_TEMPLATE}, which is {@code
-     * W-P-SSSSS-of-NNNNN}.
-     */
-    public static FilenamePolicy nameFilesUsingWindowPaneAndShard(final String prefix) {
-      return nameFilesUsingShardTemplate(
-          prefix, DefaultFilenamePolicy.DEFAULT_WINDOWED_SHARD_TEMPLATE);
+    private static ValueProvider<ResourceId> toResource(ValueProvider<String> path) {
+      return ValueProvider.NestedValueProvider.of(path,
+          new SerializableFunction<String, ResourceId>() {
+            @Override
+            public ResourceId apply(String input) {
+              return FileBasedSink.convertToFileResourceIfPossible(input);
+            }
+          });
     }
 
     /**
-     * Generates filenames as {@link #nameFilesUsingShardTemplate(String, String)} with a shard
-     * template of {@link DefaultFilenamePolicy#DEFAULT_UNWINDOWED_SHARD_TEMPLATE}, which is {@code
-     * SSSSS-of-NNNNN} and ignores the window and pane.
+     * Generates filenames as {@link #nameFilesUsingShardTemplate(String, String, String)} with a
+     * shard template of {@link DefaultFilenamePolicy#DEFAULT_WINDOWED_SHARD_TEMPLATE}, which is
+     * {@code W-P-SSSSS-of-NNNNN}.
+     */
+    public static FilenamePolicy nameFilesUsingWindowPaneAndShard(
+        final String prefix, final String suffix) {
+      return nameFilesUsingShardTemplate(
+          prefix, DefaultFilenamePolicy.DEFAULT_WINDOWED_SHARD_TEMPLATE, suffix);
+    }
+
+    /**
+     * Like {@link #nameFilesUsingWindowPaneAndShard(String, String)}, but with a
+     * {@link ValueProvider} for prefix.
+     */
+    public static FilenamePolicy nameFilesUsingWindowPaneAndShard(
+        final ValueProvider<String> prefix, final String suffix) {
+      return nameFilesUsingShardTemplate(
+          prefix, DefaultFilenamePolicy.DEFAULT_WINDOWED_SHARD_TEMPLATE, suffix);
+    }
+
+    /**
+     * Generates filenames as {@link #nameFilesUsingShardTemplate(String, String, String)} with a
+     * shard template of {@link DefaultFilenamePolicy#DEFAULT_UNWINDOWED_SHARD_TEMPLATE}, which is
+     * {@code SSSSS-of-NNNNN} and ignores the window and pane.
      *
      * <p><b>Warning:</b>This policy can be used only if the input is globally windowed with a
      * default (or at-most-once) trigger.
      */
-    public static FilenamePolicy nameFilesUsingOnlyShardIgnoringWindow(final String prefix) {
+    public static FilenamePolicy nameFilesUsingOnlyShardIgnoringWindow(
+        String prefix, String suffix) {
+      return nameFilesUsingOnlyShardIgnoringWindow(StaticValueProvider.of(prefix), suffix);
+    }
+
+    /**
+     * Like {@link #nameFilesUsingOnlyShardIgnoringWindow(String, String)}, but with a
+     * {@link ValueProvider} for prefix.
+     */
+    public static FilenamePolicy nameFilesUsingOnlyShardIgnoringWindow(
+      final ValueProvider<String> prefix, final String suffix) {
       final DefaultFilenamePolicy policy =
           new DefaultFilenamePolicy(
               new DefaultFilenamePolicy.Params()
-                  .withBaseFilename(FileSystems.matchNewResource(prefix, false /* isDirectory */))
+                  .withBaseFilename(toResource(prefix))
+                  .withSuffix(suffix)
                   .withShardTemplate(DEFAULT_UNWINDOWED_SHARD_TEMPLATE));
       return new FilenamePolicy() {
         @Override
@@ -935,7 +980,7 @@ public class FileIO {
     public Write<DestinationT, UserT> withTempDirectory(
         ResourceId tempDirectory) {
       checkArgument(tempDirectory != null, "tempDirectory can not be null");
-      return withTempDirectory(ValueProvider.StaticValueProvider.of(tempDirectory));
+      return withTempDirectory(StaticValueProvider.of(tempDirectory));
     }
 
     /** Like {@link #withTempDirectory(ValueProvider)}. */
@@ -984,7 +1029,7 @@ public class FileIO {
       if (numShards == 0) {
         return withNumShards(null);
       }
-      return withNumShards(ValueProvider.StaticValueProvider.of(numShards));
+      return withNumShards(StaticValueProvider.of(numShards));
     }
 
     /**

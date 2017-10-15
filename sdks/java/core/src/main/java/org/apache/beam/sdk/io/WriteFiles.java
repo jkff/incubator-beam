@@ -775,17 +775,21 @@ public class WriteFiles<UserT, DestinationT, OutputT>
                           KV<Void, Iterable<FileResult<DestinationT>>>,
                           KV<DestinationT, String>>() {
                         @ProcessElement
-                        public void processElement(ProcessContext c) throws Exception {
+                        public void processElement(ProcessContext c, BoundedWindow w)
+                            throws Exception {
                           Set<ResourceId> tempFiles = Sets.newHashSet();
                           Multimap<DestinationT, FileResult<DestinationT>> results =
                               perDestinationResults(c.element().getValue());
                           for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
                               results.asMap().entrySet()) {
                             LOG.info(
-                                "Finalizing write operation {} for destination {} num shards: {}.",
+                                "Finalizing write operation {}"
+                                    + " for destination {} num shards {} window {} pane {}.",
                                 writeOperation,
                                 entry.getKey(),
-                                entry.getValue().size());
+                                entry.getValue().size(),
+                                w,
+                                c.pane());
                             Map<ResourceId, ResourceId> finalizeMap =
                                 writeOperation.finalize(entry.getValue());
                             tempFiles.addAll(finalizeMap.keySet());

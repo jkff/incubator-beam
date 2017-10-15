@@ -47,4 +47,13 @@ public class SerializableFunctions {
   public static <InT, OutT> SerializableFunction<InT, OutT> constant(OutT value) {
     return new Constant<>(value);
   }
+
+  public static <T> SerializableFunction<T, String> stringValueOf() {
+    return new SerializableFunction<T, String>() {
+      @Override
+      public String apply(T input) {
+        return String.valueOf(input);
+      }
+    };
+  }
 }
