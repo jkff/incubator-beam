@@ -19,6 +19,7 @@ package org.apache.beam.sdk.io;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.sdk.io.FileIO.Write.nameFilesUsingShardTemplate;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
@@ -40,8 +41,10 @@ import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
+import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.SerializableFunctions;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.util.MimeTypes;
 import org.apache.beam.sdk.values.PBegin;
@@ -74,8 +77,8 @@ public class TFRecordIO {
    */
   public static Write write() {
     return new AutoValue_TFRecordIO_Write.Builder()
-        .setShardTemplate(null)
-        .setFilenameSuffix(null)
+        .setShardTemplate(DefaultFilenamePolicy.DEFAULT_UNWINDOWED_SHARD_TEMPLATE)
+        .setFilenameSuffix("")
         .setNumShards(0)
         .setCompression(Compression.UNCOMPRESSED)
         .build();
@@ -333,12 +336,19 @@ public class TFRecordIO {
 
     @Override
     public PDone expand(PCollection<byte[]> input) {
-      checkState(getOutputPrefix() != null,
-          "need to set the output prefix of a TFRecordIO.Write transform");
-      WriteFiles<byte[], Void, byte[]> write =
-          WriteFiles.to(
-                  new TFRecordSink(getOutputPrefix(), getShardTemplate(), getFilenameSuffix()))
-              .withCompression(getCompression());
+      checkState(getOutputPrefix() != null, ".to() is required");
+      FileIO.Write<Void, byte[]> write =
+          FileIO.<byte[]>write()
+              .via(sink())
+              .to(
+                  nameFilesUsingShardTemplate(
+                      NestedValueProvider.of(
+                          getOutputPrefix(), SerializableFunctions.<ResourceId>stringValueOf()),
+                      getShardTemplate(),
+                      getFilenameSuffix()))
+              .withCompression(getCompression())
+              .withTempDirectory(getOutputPrefix())
+              .withIgnoreWindowing();
       if (getNumShards() > 0) {
         write = write.withNumShards(getNumShards());
       }
@@ -388,6 +398,14 @@ public class TFRecordIO {
     public boolean matches(String filename) {
       return canonical.matches(filename);
     }
+  }
+
+  /**
+   * Returns a {@link FileIO.Sink} for use with {@link FileIO#write} and {@link
+   * FileIO#writeDynamic}.
+   */
+  public static FileIO.Sink<byte[]> sink() {
+    return new TFRecordSink();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -499,43 +517,29 @@ public class TFRecordIO {
 
   /** A {@link FileBasedSink} for TFRecord files. Produces TFRecord files. */
   @VisibleForTesting
-  static class TFRecordSink extends FileBasedSink<byte[], Void, byte[]> {
-    @VisibleForTesting
-    TFRecordSink(
-        ValueProvider<ResourceId> outputPrefix,
-        @Nullable String shardTemplate,
-        @Nullable String suffix) {
-      super(
-          DynamicFileDestinations.<byte[]>constant(
-              DefaultFilenamePolicy.fromStandardParameters(
-                  outputPrefix, shardTemplate, suffix, false)));
+  private static class TFRecordSink implements FileIO.Sink<byte[]> {
+    private WritableByteChannel outChannel;
+    private TFRecordCodec codec;
+
+    @Override
+    public String getDefaultMimeType() {
+      return MimeTypes.BINARY;
     }
 
     @Override
-    public Writer<byte[]> createWriter(Void dest) throws Exception {
-      return new TFRecordWriter();
+    public void open(WritableByteChannel channel) throws IOException {
+      this.outChannel = channel;
+      this.codec = new TFRecordCodec();
     }
 
-    /** A {@link Writer Writer} for TFRecord files. */
-    private static class TFRecordWriter extends Writer<byte[]> {
-      private WritableByteChannel outChannel;
-      private TFRecordCodec codec;
+    @Override
+    public void write(byte[] element) throws IOException {
+      codec.write(outChannel, element);
+    }
 
-      @Override
-      protected String getDefaultMimeType() {
-        return MimeTypes.BINARY;
-      }
-
-      @Override
-      protected void prepareWrite(WritableByteChannel channel) throws Exception {
-        this.outChannel = channel;
-        this.codec = new TFRecordCodec();
-      }
-
-      @Override
-      public void write(byte[] value) throws Exception {
-        codec.write(outChannel, value);
-      }
+    @Override
+    public void flush() throws IOException {
+      // Nothing
     }
   }
 
