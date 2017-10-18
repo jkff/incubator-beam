@@ -18,8 +18,6 @@
 package org.apache.beam.sdk.io;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
-import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
-import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.includesDisplayDataFor;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
@@ -47,7 +45,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
 import org.apache.beam.sdk.io.FileBasedSink.DynamicDestinations;
 import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.FileBasedSink.OutputFileHints;
@@ -70,7 +67,6 @@ import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.Top;
 import org.apache.beam.sdk.transforms.View;
-import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.DisplayData.Builder;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
@@ -154,10 +150,6 @@ public class WriteFilesTest {
           .apply(GroupByKey.<Integer, T>create())
           .apply(ParDo.of(new RemoveArbitraryKey<T>()));
     }
-  }
-
-  private String appendToTempFolder(String filename) {
-    return Paths.get(tmpFolder.getRoot().getPath(), filename).toString();
   }
 
   private String getBaseOutputFilename() {
@@ -340,31 +332,6 @@ public class WriteFilesTest {
   }
 
   @Test
-  public void testDisplayData() {
-    DynamicDestinations<String, Void, String> dynamicDestinations =
-        DynamicFileDestinations.constant(
-            DefaultFilenamePolicy.fromParams(
-                new Params()
-                    .withBaseFilename(
-                        getBaseOutputDirectory()
-                            .resolve("file", StandardResolveOptions.RESOLVE_FILE))
-                    .withShardTemplate("-SS-of-NN")));
-    SimpleSink<Void> sink =
-        new SimpleSink<Void>(dynamicDestinations) {
-          @Override
-          public void populateDisplayData(DisplayData.Builder builder) {
-            builder.add(DisplayData.item("foo", "bar"));
-          }
-        };
-    WriteFiles<String, ?, String> write = WriteFiles.to(sink);
-
-    DisplayData displayData = DisplayData.from(write);
-
-    assertThat(displayData, hasDisplayItem("sink", sink.getClass()));
-    assertThat(displayData, includesDisplayDataFor("sink", sink));
-  }
-
-  @Test
   @Category(NeedsRunner.class)
   public void testUnboundedNeedsWindowed() {
     thrown.expect(IllegalArgumentException.class);
@@ -490,67 +457,6 @@ public class WriteFilesTest {
       }
       checkFileContents(base.toString(), expected, Optional.of(numShards));
     }
-  }
-
-  @Test
-  public void testShardedDisplayData() {
-    DynamicDestinations<String, Void, String> dynamicDestinations =
-        DynamicFileDestinations.constant(
-            DefaultFilenamePolicy.fromParams(
-                new Params()
-                    .withBaseFilename(
-                        getBaseOutputDirectory()
-                            .resolve("file", StandardResolveOptions.RESOLVE_FILE))
-                    .withShardTemplate("-SS-of-NN")));
-    SimpleSink<Void> sink =
-        new SimpleSink<Void>(dynamicDestinations) {
-          @Override
-          public void populateDisplayData(DisplayData.Builder builder) {
-            builder.add(DisplayData.item("foo", "bar"));
-          }
-        };
-    WriteFiles<String, ?, String> write = WriteFiles.to(sink).withNumShards(1);
-    DisplayData displayData = DisplayData.from(write);
-    assertThat(displayData, hasDisplayItem("sink", sink.getClass()));
-    assertThat(displayData, includesDisplayDataFor("sink", sink));
-    assertThat(displayData, hasDisplayItem("numShards", 1));
-  }
-
-  @Test
-  public void testCustomShardStrategyDisplayData() {
-    DynamicDestinations<String, Void, String> dynamicDestinations =
-        DynamicFileDestinations.constant(
-            DefaultFilenamePolicy.fromParams(
-                new Params()
-                    .withBaseFilename(
-                        getBaseOutputDirectory()
-                            .resolve("file", StandardResolveOptions.RESOLVE_FILE))
-                    .withShardTemplate("-SS-of-NN")));
-    SimpleSink<Void> sink =
-        new SimpleSink<Void>(dynamicDestinations) {
-          @Override
-          public void populateDisplayData(DisplayData.Builder builder) {
-            builder.add(DisplayData.item("foo", "bar"));
-          }
-        };
-    WriteFiles<String, ?, String> write =
-        WriteFiles.to(sink)
-            .withSharding(
-                new PTransform<PCollection<String>, PCollectionView<Integer>>() {
-                  @Override
-                  public PCollectionView<Integer> expand(PCollection<String> input) {
-                    return null;
-                  }
-
-                  @Override
-                  public void populateDisplayData(DisplayData.Builder builder) {
-                    builder.add(DisplayData.item("spam", "ham"));
-                  }
-                });
-    DisplayData displayData = DisplayData.from(write);
-    assertThat(displayData, hasDisplayItem("sink", sink.getClass()));
-    assertThat(displayData, includesDisplayDataFor("sink", sink));
-    assertThat(displayData, hasDisplayItem("spam", "ham"));
   }
 
   /**

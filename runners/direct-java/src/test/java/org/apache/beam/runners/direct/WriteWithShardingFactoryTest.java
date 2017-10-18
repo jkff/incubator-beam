@@ -36,30 +36,22 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.direct.WriteWithShardingFactory.CalculateShardsFn;
 import org.apache.beam.sdk.coders.VarLongCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
-import org.apache.beam.sdk.io.Compression;
-import org.apache.beam.sdk.io.DynamicFileDestinations;
 import org.apache.beam.sdk.io.FileBasedSink;
 import org.apache.beam.sdk.io.FileSystems;
-import org.apache.beam.sdk.io.LocalResources;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.WriteFiles;
 import org.apache.beam.sdk.io.WriteFilesResult;
 import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
-import org.apache.beam.sdk.io.fs.ResourceId;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.DoFnTester;
 import org.apache.beam.sdk.transforms.PTransform;
-import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
-import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PCollectionViews;
@@ -142,8 +134,7 @@ public class WriteWithShardingFactoryTest implements Serializable {
   public void withNoShardingSpecifiedReturnsNewTransform() {
     PTransform<PCollection<Object>, WriteFilesResult<Void>> original =
         WriteFiles.to(
-            new FileBasedSink<Object, Void, Object>(
-                DynamicFileDestinations.constant(new FakeFilenamePolicy())) {
+            new FileBasedSink<Object, Void, Object>(null) {
               @Override
               public Writer<Object> createWriter(Void dest) throws Exception {
                 throw new IllegalArgumentException("Should not be used");
@@ -236,26 +227,5 @@ public class WriteWithShardingFactoryTest implements Serializable {
 
     List<Integer> shards = fnTester.processBundle((long) count);
     assertThat(shards, containsInAnyOrder(13));
-  }
-
-  private static class FakeFilenamePolicy extends FileBasedSink.FilenamePolicy {
-    @Override
-    public ResourceId windowedFilename(
-        int shardNumber,
-        int numShards,
-        BoundedWindow window,
-        PaneInfo paneInfo,
-        FileBasedSink.OutputFileHints outputFileHints) {
-      throw new IllegalArgumentException("Should not be used");
-    }
-
-    @Nullable
-    @Override
-    public ResourceId unwindowedFilename(
-        int shardNumber,
-        int numShards,
-        FileBasedSink.OutputFileHints outputFileHints) {
-      throw new IllegalArgumentException("Should not be used");
-    }
   }
 }

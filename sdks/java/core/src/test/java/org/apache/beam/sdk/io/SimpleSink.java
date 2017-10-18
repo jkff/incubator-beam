@@ -17,12 +17,18 @@
  */
 package org.apache.beam.sdk.io;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
+import org.apache.beam.sdk.io.fs.ResolveOptions;
 import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
+import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.transforms.SerializableFunctions;
+import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.util.MimeTypes;
 
 /**
@@ -35,7 +41,7 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
 
   public static SimpleSink<Void> makeSimpleSink(FilenamePolicy filenamePolicy) {
     return new SimpleSink<>(
-        DynamicFileDestinations.<String>constant(filenamePolicy));
+        new ConstantFilenamePolicy<String>(filenamePolicy));
   }
 
   public static SimpleSink<Void> makeSimpleSink(
@@ -43,15 +49,13 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
       String prefix,
       String shardTemplate,
       String suffix) {
-    DynamicDestinations<String, Void, String> dynamicDestinations =
-        DynamicFileDestinations.constant(
-            DefaultFilenamePolicy.fromParams(
-                new Params()
-                    .withBaseFilename(
-                        baseDirectory.resolve(prefix, StandardResolveOptions.RESOLVE_FILE))
-                    .withShardTemplate(shardTemplate)
-                    .withSuffix(suffix)));
-    return new SimpleSink<>(dynamicDestinations);
+    return makeSimpleSink(
+        DefaultFilenamePolicy.fromParams(
+            new Params()
+                .withBaseFilename(
+                    baseDirectory.resolve(prefix, StandardResolveOptions.RESOLVE_FILE))
+                .withShardTemplate(shardTemplate)
+                .withSuffix(suffix)));
   }
 
   @Override
@@ -88,6 +92,36 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     @Override
     protected void finishWrite() throws Exception {
       channel.write(wrap(FOOTER));
+    }
+  }
+
+  /** Always returns a constant {@link FilenamePolicy}. */
+  private static class ConstantFilenamePolicy<UserT>
+      extends DynamicDestinations<UserT, Void, UserT> {
+    private final FilenamePolicy filenamePolicy;
+
+    public ConstantFilenamePolicy(FilenamePolicy filenamePolicy) {
+      this.filenamePolicy = filenamePolicy;
+    }
+
+    @Override
+    public UserT formatRecord(UserT record) {
+      return record;
+    }
+
+    @Override
+    public Void getDestination(UserT element) {
+      return null;
+    }
+
+    @Override
+    public Void getDefaultDestination() {
+      return null;
+    }
+
+    @Override
+    public FilenamePolicy getFilenamePolicy(Void destination) {
+      return filenamePolicy;
     }
   }
 }

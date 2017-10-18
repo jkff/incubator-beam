@@ -27,21 +27,15 @@ import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
 import java.io.Serializable;
 import java.util.Collections;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
-import org.apache.beam.sdk.io.Compression;
-import org.apache.beam.sdk.io.DefaultFilenamePolicy;
-import org.apache.beam.sdk.io.DynamicFileDestinations;
 import org.apache.beam.sdk.io.FileBasedSink;
-import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.LocalResources;
 import org.apache.beam.sdk.io.WriteFiles;
 import org.apache.beam.sdk.io.WriteFilesResult;
 import org.apache.beam.sdk.io.fs.ResourceId;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.runners.PTransformMatcher;
 import org.apache.beam.sdk.state.StateSpec;
@@ -64,9 +58,7 @@ import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.View.CreatePCollectionView;
 import org.apache.beam.sdk.transforms.ViewFn;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
-import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindows;
-import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.KV;
@@ -544,8 +536,7 @@ public class PTransformMatchersTest implements Serializable {
     ResourceId outputDirectory = LocalResources.fromString("/foo/bar", true /* isDirectory */);
     WriteFiles<Integer, Void, Integer> write =
         WriteFiles.to(
-            new FileBasedSink<Integer, Void, Integer>(
-                DynamicFileDestinations.<Integer>constant(new FakeFilenamePolicy())) {
+            new FileBasedSink<Integer, Void, Integer>(null) {
               @Override
               public Writer<Integer> createWriter(Void dest) throws Exception {
                 return null;
@@ -577,24 +568,5 @@ public class PTransformMatchersTest implements Serializable {
             Collections.<TupleTag<?>, PValue>emptyMap(),
             write,
             p);
-  }
-
-  private static class FakeFilenamePolicy extends FilenamePolicy {
-    @Override
-    public ResourceId windowedFilename(
-        int shardNumber,
-        int numShards,
-        BoundedWindow window,
-        PaneInfo paneInfo,
-        FileBasedSink.OutputFileHints outputFileHints) {
-      throw new UnsupportedOperationException("should not be called");
-    }
-
-    @Nullable
-    @Override
-    public ResourceId unwindowedFilename(
-        int shardNumber, int numShards, FileBasedSink.OutputFileHints outputFileHints) {
-      throw new UnsupportedOperationException("should not be called");
-    }
   }
 }

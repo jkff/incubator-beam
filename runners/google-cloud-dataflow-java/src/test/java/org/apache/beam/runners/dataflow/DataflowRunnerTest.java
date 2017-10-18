@@ -75,20 +75,16 @@ import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.extensions.gcp.auth.NoopCredentialFactory;
 import org.apache.beam.sdk.extensions.gcp.auth.TestCredential;
 import org.apache.beam.sdk.extensions.gcp.storage.NoopPathValidator;
-import org.apache.beam.sdk.io.Compression;
-import org.apache.beam.sdk.io.DynamicFileDestinations;
 import org.apache.beam.sdk.io.FileBasedSink;
 import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.WriteFiles;
 import org.apache.beam.sdk.io.WriteFilesResult;
-import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptions.CheckEnabled;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.StreamingOptions;
 import org.apache.beam.sdk.options.ValueProvider;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.runners.TransformHierarchy;
 import org.apache.beam.sdk.runners.TransformHierarchy.Node;
@@ -103,9 +99,6 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.beam.sdk.transforms.SerializableFunctions;
-import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
-import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.transforms.windowing.Sessions;
 import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.util.GcsUtil;
@@ -1300,26 +1293,7 @@ public class DataflowRunnerTest implements Serializable {
     public void validate(PipelineOptions options) {}
 
     TestSink() {
-      super(
-          DynamicFileDestinations.constant(
-              new FilenamePolicy() {
-                @Override
-                public ResourceId windowedFilename(
-                    int shardNumber,
-                    int numShards,
-                    BoundedWindow window,
-                    PaneInfo paneInfo,
-                    OutputFileHints outputFileHints) {
-                  throw new UnsupportedOperationException("should not be called");
-                }
-
-                @Override
-                public ResourceId unwindowedFilename(
-                    int shardNumber, int numShards, OutputFileHints outputFileHints) {
-                  throw new UnsupportedOperationException("should not be called");
-                }
-              },
-              SerializableFunctions.identity()));
+      super(null);
     }
 
     @Override
