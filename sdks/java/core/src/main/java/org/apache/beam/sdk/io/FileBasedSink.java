@@ -88,9 +88,6 @@ import org.slf4j.LoggerFactory;
  * and defines the format of output files (how values are written, headers/footers, MIME type,
  * etc.).
  *
- * <p>At pipeline construction time, the methods of FileBasedSink are called to validate the sink
- * and to create a {@link WriteOperation} that manages the process of writing to the sink.
- *
  * <p>The process of writing to file-based sink is as follows:
  *
  * <ol>
@@ -102,9 +99,8 @@ import org.slf4j.LoggerFactory;
  * <p>In order to ensure fault-tolerance, a bundle may be executed multiple times (e.g., in the
  * event of failure/retry or for redundancy). However, exactly one of these executions will have its
  * result passed to the finalize method. Each call to {@link Writer#open} is passed a unique
- * <i>bundle id</i> when it is called by the WriteFiles
- * transform, so even redundant or retried bundles will have a unique way of identifying their
- * output.
+ * <i>bundle id</i> when it is called by the WriteFiles transform, so even redundant or retried
+ * bundles will have a unique way of identifying their output.
  *
  * <p>The bundle id should be used to guarantee that a bundle's output is unique. This uniqueness
  * guarantee is important; if a bundle is to be output to a file, for example, the name of the file
@@ -116,6 +112,40 @@ import org.slf4j.LoggerFactory;
  * works for bounded PCollecctions.
  *
  * <p>Supported file systems are those registered with {@link FileSystems}.
+ *
+ * <h2>Lifecycle of writing to a sink</h2>
+ *
+ * <p>The primary responsibilities of the WriteOperation is the management of output files. During a
+ * write, {@link FileBasedSink.Writer}s write bundles to temporary file locations. After the bundles
+ * have been written,
+ *
+ * <ol>
+ *   <li>{@link #finalize} is given a list of the temporary files containing the
+ *       output bundles.
+ *   <li>During finalize, these temporary files are copied to final output locations and named
+ *       according to a file naming template.
+ *   <li>Finally, any temporary files that were created during the write are removed.
+ * </ol>
+ *
+ * <p>Subclass implementations of WriteOperation must implement {@link #createWriter}
+ * to return a concrete FileBasedSinkWriter.
+ *
+ * <h2>Temporary and Output File Naming:</h2>
+ *
+ * <p>During the write, bundles are written to temporary files using the tempDirectory that can be
+ * provided via the constructor of WriteOperation. These temporary files will be named {@code
+ * {tempDirectory}/{bundleId}}, where bundleId is the unique id of the bundle. For example, if
+ * tempDirectory is "gs://my-bucket/my_temp_output", the output for a bundle with bundle id 15723
+ * will be "gs://my-bucket/my_temp_output/15723".
+ *
+ * <p>Final output files are written to the location specified by the {@link FilenamePolicy}.
+ * If no filename policy is specified, then the {@link DefaultFilenamePolicy} will be used.
+ * The directory that the files are written to is determined by the {@link FilenamePolicy} instance.
+ *
+ * <p>Note that in the case of permanent failure of a bundle's write, no clean up of temporary files
+ * will occur.
+ *
+ * <p>If there are no elements in the PCollection being written, no output will be generated.
  *
  * @param <OutputT> the type of values written to the sink.
  * @deprecated Use {@link FileIO#write} and {@link FileIO#writeDynamic} instead.
@@ -423,359 +453,212 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
 
   public void validate(PipelineOptions options) {}
 
-  /** Return a subclass of {@link WriteOperation} that will manage the write to the sink. */
-  public abstract WriteOperation<DestinationT, OutputT> createWriteOperation();
+  /**
+   * Clients must implement to return a subclass of {@link Writer}. This method must not mutate
+   * the state of the object.
+   */
+  public abstract Writer<DestinationT, OutputT> createWriter() throws Exception;
 
   public void populateDisplayData(DisplayData.Builder builder) {
     getDynamicDestinations().populateDisplayData(builder);
   }
 
-  /**
-   * Abstract operation that manages the process of writing to {@link FileBasedSink}.
-   *
-   * <p>The primary responsibilities of the WriteOperation is the management of output files. During
-   * a write, {@link Writer}s write bundles to temporary file locations. After the bundles have been
-   * written,
-   *
-   * <ol>
-   *   <li>{@link WriteOperation#finalize} is given a list of the temporary files containing the
-   *       output bundles.
-   *   <li>During finalize, these temporary files are copied to final output locations and named
-   *       according to a file naming template.
-   *   <li>Finally, any temporary files that were created during the write are removed.
-   * </ol>
-   *
-   * <p>Subclass implementations of WriteOperation must implement {@link
-   * WriteOperation#createWriter} to return a concrete FileBasedSinkWriter.
-   *
-   * <h2>Temporary and Output File Naming:</h2>
-   *
-   * <p>During the write, bundles are written to temporary files using the tempDirectory that can be
-   * provided via the constructor of WriteOperation. These temporary files will be named {@code
-   * {tempDirectory}/{bundleId}}, where bundleId is the unique id of the bundle. For example, if
-   * tempDirectory is "gs://my-bucket/my_temp_output", the output for a bundle with bundle id 15723
-   * will be "gs://my-bucket/my_temp_output/15723".
-   *
-   * <p>Final output files are written to the location specified by the {@link FilenamePolicy}. If
-   * no filename policy is specified, then the {@link DefaultFilenamePolicy} will be used. The
-   * directory that the files are written to is determined by the {@link FilenamePolicy} instance.
-   *
-   * <p>Note that in the case of permanent failure of a bundle's write, no clean up of temporary
-   * files will occur.
-   *
-   * <p>If there are no elements in the PCollection being written, no output will be generated.
-   *
-   * @param <OutputT> the type of values written to the sink.
-   */
-  public abstract static class WriteOperation<DestinationT, OutputT> implements Serializable {
-    /** The Sink that this WriteOperation will write to. */
-    protected final FileBasedSink<?, DestinationT, OutputT> sink;
-
-    /** Directory for temporary output files. */
-    protected final ValueProvider<ResourceId> tempDirectory;
-
-    /** Whether windowed writes are being used. */
-    @Experimental(Kind.FILESYSTEM)
-    protected boolean windowedWrites;
-
-    /** Constructs a temporary file resource given the temporary directory and a filename. */
-    @Experimental(Kind.FILESYSTEM)
-    protected static ResourceId buildTemporaryFilename(ResourceId tempDirectory, String filename)
-        throws IOException {
-      return tempDirectory.resolve(filename, StandardResolveOptions.RESOLVE_FILE);
-    }
-
-    /**
-     * Constructs a WriteOperation using the default strategy for generating a temporary directory
-     * from the base output filename.
-     *
-     * <p>Default is a uniquely named subdirectory of the provided tempDirectory, e.g. if
-     * tempDirectory is /path/to/foo/, the temporary directory will be
-     * /path/to/foo/temp-beam-foo-$date.
-     *
-     * @param sink the FileBasedSink that will be used to configure this write operation.
-     */
-    public WriteOperation(FileBasedSink<?, DestinationT, OutputT> sink) {
-      this(
-          sink,
-          NestedValueProvider.of(sink.getTempDirectoryProvider(), new TemporaryDirectoryBuilder()));
-    }
-
-    private static class TemporaryDirectoryBuilder
-        implements SerializableFunction<ResourceId, ResourceId> {
-      private static final AtomicLong TEMP_COUNT = new AtomicLong(0);
-      private static final DateTimeFormatter TEMPDIR_TIMESTAMP =
-          DateTimeFormat.forPattern("yyyy-MM-DD_HH-mm-ss");
-      // The intent of the code is to have a consistent value of tempDirectory across
-      // all workers, which wouldn't happen if now() was called inline.
-      private final String timestamp = Instant.now().toString(TEMPDIR_TIMESTAMP);
-      // Multiple different sinks may be used in the same output directory; use tempId to create a
-      // separate temp directory for each.
-      private final Long tempId = TEMP_COUNT.getAndIncrement();
-
-      @Override
-      public ResourceId apply(ResourceId tempDirectory) {
-        // Temp directory has a timestamp and a unique ID
-        String tempDirName = String.format(".temp-beam-%s-%s", timestamp, tempId);
-        return tempDirectory
-            .getCurrentDirectory()
-            .resolve(tempDirName, StandardResolveOptions.RESOLVE_DIRECTORY);
-      }
-    }
-
-    /**
-     * Create a new WriteOperation.
-     *
-     * @param sink the FileBasedSink that will be used to configure this write operation.
-     * @param tempDirectory the base directory to be used for temporary output files.
-     */
-    @Experimental(Kind.FILESYSTEM)
-    public WriteOperation(FileBasedSink<?, DestinationT, OutputT> sink, ResourceId tempDirectory) {
-      this(sink, StaticValueProvider.of(tempDirectory));
-    }
-
-    private WriteOperation(
-        FileBasedSink<?, DestinationT, OutputT> sink, ValueProvider<ResourceId> tempDirectory) {
-      this.sink = sink;
-      this.tempDirectory = tempDirectory;
-      this.windowedWrites = false;
-    }
-
-    /**
-     * Clients must implement to return a subclass of {@link Writer}. This method must not mutate
-     * the state of the object.
-     */
-    public abstract Writer<DestinationT, OutputT> createWriter() throws Exception;
-
-    /** Indicates that the operation will be performing windowed writes. */
-    public void setWindowedWrites(boolean windowedWrites) {
-      this.windowedWrites = windowedWrites;
-    }
-
-    /**
-     * Finalizes writing by copying temporary output files to their final location.
-     *
-     * <p>Finalization may be overridden by subclass implementations to perform customized
-     * finalization (e.g., initiating some operation on output bundles, merging them, etc.). {@code
-     * writerResults} contains the filenames of written bundles.
-     *
-     * <p>If subclasses override this method, they must guarantee that its implementation is
-     * idempotent, as it may be executed multiple times in the case of failure or for redundancy. It
-     * is a best practice to attempt to try to make this method atomic.
-     *
-     * <p>Returns the map of temporary files generated to final filenames. Callers must call {@link
-     * #removeTemporaryFiles(Set)} to cleanup the temporary files.
-     *
-     * @param writerResults the results of writes (FileResult).
-     */
-    public Map<ResourceId, ResourceId> finalize(Iterable<FileResult<DestinationT>> writerResults)
-        throws Exception {
-      // Collect names of temporary files and copies them.
-      Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(writerResults);
-      copyToOutputFiles(outputFilenames);
-      return outputFilenames;
-    }
-
-    /*
-     * Remove temporary files after finalization.
-     *
-     * <p>In the case where we are doing global-window, untriggered writes, we remove the entire
-     * temporary directory, rather than specifically removing the files from writerResults, because
-     * writerResults includes only successfully completed bundles, and we'd like to clean up the
-     * failed ones too. The reason we remove files here rather than in finalize is that finalize
-     * might be called multiple times (e.g. if the bundle contained multiple destinations), and
-     * deleting the entire directory can't be done until all calls to finalize.
-     *
-     * <p>When windows or triggers are specified, files are generated incrementally so deleting the
-     * entire directory in finalize is incorrect. If windowedWrites is true, we instead delete the
-     * files individually. This means that some temporary files generated by failed bundles might
-     * not be cleaned up. Note that {@link WriteFiles} does attempt clean up files if exceptions
-     * are thrown, however there are still some scenarios where temporary files might be left.
-     */
-    public void removeTemporaryFiles(Set<ResourceId> filenames) throws IOException {
-      removeTemporaryFiles(filenames, !windowedWrites);
-    }
-
-    @Experimental(Kind.FILESYSTEM)
-    protected final Map<ResourceId, ResourceId> buildOutputFilenames(
-        Iterable<FileResult<DestinationT>> writerResults) {
-      int numShards = Iterables.size(writerResults);
-      Map<ResourceId, ResourceId> outputFilenames = Maps.newHashMap();
-
-      // Either all results have a shard number set (if the sink is configured with a fixed
-      // number of shards), or they all don't (otherwise).
-      Boolean isShardNumberSetEverywhere = null;
-      for (FileResult<DestinationT> result : writerResults) {
-        boolean isShardNumberSetHere = (result.getShard() != UNKNOWN_SHARDNUM);
-        if (isShardNumberSetEverywhere == null) {
-          isShardNumberSetEverywhere = isShardNumberSetHere;
-        } else {
-          checkArgument(
-              isShardNumberSetEverywhere == isShardNumberSetHere,
-              "Found a mix of files with and without shard number set: %s",
-              result);
-        }
-      }
-
-      if (isShardNumberSetEverywhere == null) {
-        isShardNumberSetEverywhere = true;
-      }
-
-      List<FileResult<DestinationT>> resultsWithShardNumbers = Lists.newArrayList();
-      if (isShardNumberSetEverywhere) {
-        resultsWithShardNumbers = Lists.newArrayList(writerResults);
-      } else {
-        // Sort files for idempotence. Sort by temporary filename.
-        // Note that this codepath should not be used when processing triggered windows. In the
-        // case of triggers, the list of FileResult objects in the Finalize iterable is not
-        // deterministic, and might change over retries. This breaks the assumption below that
-        // sorting the FileResult objects provides idempotency.
-        List<FileResult<DestinationT>> sortedByTempFilename =
-            Ordering.from(
-                    new Comparator<FileResult<DestinationT>>() {
-                      @Override
-                      public int compare(
-                          FileResult<DestinationT> first, FileResult<DestinationT> second) {
-                        String firstFilename = first.getTempFilename().toString();
-                        String secondFilename = second.getTempFilename().toString();
-                        return firstFilename.compareTo(secondFilename);
-                      }
-                    })
-                .sortedCopy(writerResults);
-        for (int i = 0; i < sortedByTempFilename.size(); i++) {
-          resultsWithShardNumbers.add(sortedByTempFilename.get(i).withShard(i));
-        }
-      }
-
-      for (FileResult<DestinationT> result : resultsWithShardNumbers) {
-        checkArgument(
-            result.getShard() != UNKNOWN_SHARDNUM, "Should have set shard number on %s", result);
-        outputFilenames.put(
-            result.getTempFilename(),
-            result.getDestinationFile(
-                getSink().getDynamicDestinations(),
-                numShards,
-                getSink().getWritableByteChannelFactory()));
-      }
-
-      int numDistinctShards = new HashSet<>(outputFilenames.values()).size();
-      checkState(
-          numDistinctShards == outputFilenames.size(),
-          "Only generated %s distinct file names for %s files.",
-          numDistinctShards,
-          outputFilenames.size());
-      return outputFilenames;
-    }
-
-    /**
-     * Copy temporary files to final output filenames using the file naming template.
-     *
-     * <p>Can be called from subclasses that override {@link WriteOperation#finalize}.
-     *
-     * <p>Files will be named according to the {@link FilenamePolicy}. The order of the output files
-     * will be the same as the sorted order of the input filenames. In other words (when using
-     * {@link DefaultFilenamePolicy}), if the input filenames are ["C", "A", "B"], baseFilename (int
-     * the policy) is "dir/file", the extension is ".txt", and the fileNamingTemplate is
-     * "-SSS-of-NNN", the contents of A will be copied to dir/file-000-of-003.txt, the contents of B
-     * will be copied to dir/file-001-of-003.txt, etc.
-     *
-     * @param filenames the filenames of temporary files.
-     */
-    @VisibleForTesting
-    @Experimental(Kind.FILESYSTEM)
-    final void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
-      int numFiles = filenames.size();
-      if (numFiles > 0) {
-        LOG.debug("Copying {} files.", numFiles);
-        List<ResourceId> srcFiles = new ArrayList<>(filenames.size());
-        List<ResourceId> dstFiles = new ArrayList<>(filenames.size());
-        for (Map.Entry<ResourceId, ResourceId> srcDestPair : filenames.entrySet()) {
-          srcFiles.add(srcDestPair.getKey());
-          dstFiles.add(srcDestPair.getValue());
-        }
-        // During a failure case, files may have been deleted in an earlier step. Thus
-        // we ignore missing files here.
-        FileSystems.copy(srcFiles, dstFiles, StandardMoveOptions.IGNORE_MISSING_FILES);
-      } else {
-        LOG.info("No output files to write.");
-      }
-    }
-
-    /**
-     * Removes temporary output files. Uses the temporary directory to find files to remove.
-     *
-     * <p>Can be called from subclasses that override {@link WriteOperation#finalize}.
-     * <b>Note:</b>If finalize is overridden and does <b>not</b> rename or otherwise finalize
-     * temporary files, this method will remove them.
-     */
-    @VisibleForTesting
-    @Experimental(Kind.FILESYSTEM)
-    final void removeTemporaryFiles(
-        Set<ResourceId> knownFiles, boolean shouldRemoveTemporaryDirectory) throws IOException {
-      ResourceId tempDir = tempDirectory.get();
-      LOG.debug("Removing temporary bundle output files in {}.", tempDir);
-
-      // To partially mitigate the effects of filesystems with eventually-consistent
-      // directory matching APIs, we remove not only files that the filesystem says exist
-      // in the directory (which may be incomplete), but also files that are known to exist
-      // (produced by successfully completed bundles).
-
-      // This may still fail to remove temporary outputs of some failed bundles, but at least
-      // the common case (where all bundles succeed) is guaranteed to be fully addressed.
-      Set<ResourceId> matches = new HashSet<>();
-      // TODO: Windows OS cannot resolves and matches '*' in the path,
-      // ignore the exception for now to avoid failing the pipeline.
-      if (shouldRemoveTemporaryDirectory) {
-        try {
-          MatchResult singleMatch =
-              Iterables.getOnlyElement(
-                  FileSystems.match(Collections.singletonList(tempDir.toString() + "*")));
-          for (Metadata matchResult : singleMatch.metadata()) {
-            matches.add(matchResult.resourceId());
-          }
-        } catch (Exception e) {
-          LOG.warn("Failed to match temporary files under: [{}].", tempDir);
-        }
-      }
-      Set<ResourceId> allMatches = new HashSet<>(matches);
-      allMatches.addAll(knownFiles);
-      LOG.debug(
-          "Removing {} temporary files found under {} ({} matched glob, {} known files)",
-          allMatches.size(),
-          tempDir,
-          matches.size(),
-          allMatches.size() - matches.size());
-      FileSystems.delete(allMatches, StandardMoveOptions.IGNORE_MISSING_FILES);
-
-      // Deletion of the temporary directory might fail, if not all temporary files are removed.
-      try {
-        FileSystems.delete(
-            Collections.singletonList(tempDir), StandardMoveOptions.IGNORE_MISSING_FILES);
-      } catch (Exception e) {
-        LOG.warn("Failed to remove temporary directory: [{}].", tempDir);
-      }
-    }
-
-    /** Returns the FileBasedSink for this write operation. */
-    public FileBasedSink<?, DestinationT, OutputT> getSink() {
-      return sink;
-    }
-
-    @Override
-    public String toString() {
-      return getClass().getSimpleName()
-          + "{"
-          + "tempDirectory="
-          + tempDirectory
-          + ", windowedWrites="
-          + windowedWrites
-          + '}';
-    }
-  }
-
   /** Returns the {@link WritableByteChannelFactory} used. */
   protected final WritableByteChannelFactory getWritableByteChannelFactory() {
     return writableByteChannelFactory;
+  }
+
+  /**
+   * Finalizes writing by copying temporary output files to their final location.
+   *
+   * <p>Finalization may be overridden by subclass implementations to perform customized
+   * finalization (e.g., initiating some operation on output bundles, merging them, etc.). {@code
+   * writerResults} contains the filenames of written bundles.
+   *
+   * <p>If subclasses override this method, they must guarantee that its implementation is
+   * idempotent, as it may be executed multiple times in the case of failure or for redundancy. It
+   * is a best practice to attempt to try to make this method atomic.
+   *
+   * <p>Returns the map of temporary files generated to final filenames. Callers must call {@link
+   * #removeTemporaryFiles} to cleanup the temporary files.
+   *
+   * @param writerResults the results of writes (FileResult).
+   */
+  Map<ResourceId, ResourceId> finalize(
+      Iterable<FileResult<DestinationT>> writerResults) throws Exception {
+    // Collect names of temporary files and copies them.
+    Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(writerResults);
+    copyToOutputFiles(outputFilenames);
+    return outputFilenames;
+  }
+
+  @Experimental(Kind.FILESYSTEM)
+  Map<ResourceId, ResourceId> buildOutputFilenames(
+      Iterable<FileResult<DestinationT>> writerResults) {
+    int numShards = Iterables.size(writerResults);
+    Map<ResourceId, ResourceId> outputFilenames = Maps.newHashMap();
+
+    // Either all results have a shard number set (if the sink is configured with a fixed
+    // number of shards), or they all don't (otherwise).
+    Boolean isShardNumberSetEverywhere = null;
+    for (FileResult<DestinationT> result : writerResults) {
+      boolean isShardNumberSetHere = (result.getShard() != UNKNOWN_SHARDNUM);
+      if (isShardNumberSetEverywhere == null) {
+        isShardNumberSetEverywhere = isShardNumberSetHere;
+      } else {
+        checkArgument(
+            isShardNumberSetEverywhere == isShardNumberSetHere,
+            "Found a mix of files with and without shard number set: %s",
+            result);
+      }
+    }
+
+    if (isShardNumberSetEverywhere == null) {
+      isShardNumberSetEverywhere = true;
+    }
+
+    List<FileResult<DestinationT>> resultsWithShardNumbers = Lists.newArrayList();
+    if (isShardNumberSetEverywhere) {
+      resultsWithShardNumbers = Lists.newArrayList(writerResults);
+    } else {
+      // Sort files for idempotence. Sort by temporary filename.
+      // Note that this codepath should not be used when processing triggered windows. In the
+      // case of triggers, the list of FileResult objects in the Finalize iterable is not
+      // deterministic, and might change over retries. This breaks the assumption below that
+      // sorting the FileResult objects provides idempotency.
+      List<FileResult<DestinationT>> sortedByTempFilename =
+          Ordering.from(
+              new Comparator<FileResult<DestinationT>>() {
+                @Override
+                public int compare(
+                    FileResult<DestinationT> first, FileResult<DestinationT> second) {
+                  String firstFilename = first.getTempFilename().toString();
+                  String secondFilename = second.getTempFilename().toString();
+                  return firstFilename.compareTo(secondFilename);
+                }
+              })
+              .sortedCopy(writerResults);
+      for (int i = 0; i < sortedByTempFilename.size(); i++) {
+        resultsWithShardNumbers.add(sortedByTempFilename.get(i).withShard(i));
+      }
+    }
+
+    for (FileResult<DestinationT> result : resultsWithShardNumbers) {
+      checkArgument(
+          result.getShard() != UNKNOWN_SHARDNUM, "Should have set shard number on %s", result);
+      outputFilenames.put(
+          result.getTempFilename(),
+          result.getDestinationFile(
+              getDynamicDestinations(),
+              numShards,
+              getWritableByteChannelFactory()));
+    }
+
+    int numDistinctShards = new HashSet<>(outputFilenames.values()).size();
+    checkState(
+        numDistinctShards == outputFilenames.size(),
+        "Only generated %s distinct file names for %s files.",
+        numDistinctShards,
+        outputFilenames.size());
+    return outputFilenames;
+  }
+
+  /**
+   * Copy temporary files to final output filenames using the file naming template.
+   *
+   * <p>Can be called from subclasses that override {@link WriteOperation#finalize}.
+   *
+   * <p>Files will be named according to the {@link FilenamePolicy}. The order of the output files
+   * will be the same as the sorted order of the input filenames. In other words (when using
+   * {@link DefaultFilenamePolicy}), if the input filenames are ["C", "A", "B"], baseFilename (int
+   * the policy) is "dir/file", the extension is ".txt", and the fileNamingTemplate is
+   * "-SSS-of-NNN", the contents of A will be copied to dir/file-000-of-003.txt, the contents of B
+   * will be copied to dir/file-001-of-003.txt, etc.
+   *
+   * @param filenames the filenames of temporary files.
+   */
+  @VisibleForTesting
+  @Experimental(Kind.FILESYSTEM)
+  static void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
+    int numFiles = filenames.size();
+    if (numFiles > 0) {
+      LOG.debug("Copying {} files.", numFiles);
+      List<ResourceId> srcFiles = new ArrayList<>(filenames.size());
+      List<ResourceId> dstFiles = new ArrayList<>(filenames.size());
+      for (Map.Entry<ResourceId, ResourceId> srcDestPair : filenames.entrySet()) {
+        srcFiles.add(srcDestPair.getKey());
+        dstFiles.add(srcDestPair.getValue());
+      }
+      // During a failure case, files may have been deleted in an earlier step. Thus
+      // we ignore missing files here.
+      FileSystems.copy(srcFiles, dstFiles, StandardMoveOptions.IGNORE_MISSING_FILES);
+    } else {
+      LOG.info("No output files to write.");
+    }
+  }
+
+  /*
+   * Remove temporary files after finalization.
+   *
+   * <p>In the case where we are doing global-window, untriggered writes, we remove the entire
+   * temporary directory, rather than specifically removing the files from writerResults, because
+   * writerResults includes only successfully completed bundles, and we'd like to clean up the
+   * failed ones too. The reason we remove files here rather than in finalize is that finalize
+   * might be called multiple times (e.g. if the bundle contained multiple destinations), and
+   * deleting the entire directory can't be done until all calls to finalize.
+   *
+   * <p>When windows or triggers are specified, files are generated incrementally so deleting the
+   * entire directory in finalize is incorrect. If windowedWrites is true, we instead delete the
+   * files individually. This means that some temporary files generated by failed bundles might
+   * not be cleaned up. Note that {@link WriteFiles} does attempt clean up files if exceptions
+   * are thrown, however there are still some scenarios where temporary files might be left.
+   */
+  @VisibleForTesting
+  @Experimental(Kind.FILESYSTEM)
+  static void removeTemporaryFiles(
+      ResourceId tempDir, Set<ResourceId> knownFiles, boolean shouldRemoveTemporaryDirectory)
+      throws IOException {
+    LOG.debug("Removing temporary bundle output files in {}.", tempDir);
+
+    // To partially mitigate the effects of filesystems with eventually-consistent
+    // directory matching APIs, we remove not only files that the filesystem says exist
+    // in the directory (which may be incomplete), but also files that are known to exist
+    // (produced by successfully completed bundles).
+
+    // This may still fail to remove temporary outputs of some failed bundles, but at least
+    // the common case (where all bundles succeed) is guaranteed to be fully addressed.
+    Set<ResourceId> matches = new HashSet<>();
+    // TODO: Windows OS cannot resolves and matches '*' in the path,
+    // ignore the exception for now to avoid failing the pipeline.
+    if (shouldRemoveTemporaryDirectory) {
+      try {
+        MatchResult singleMatch =
+            Iterables.getOnlyElement(
+                FileSystems.match(Collections.singletonList(tempDir.toString() + "*")));
+        for (Metadata matchResult : singleMatch.metadata()) {
+          matches.add(matchResult.resourceId());
+        }
+      } catch (Exception e) {
+        LOG.warn("Failed to match temporary files under: [{}].", tempDir);
+      }
+    }
+    Set<ResourceId> allMatches = new HashSet<>(matches);
+    allMatches.addAll(knownFiles);
+    LOG.debug(
+        "Removing {} temporary files found under {} ({} matched glob, {} known files)",
+        allMatches.size(),
+        tempDir,
+        matches.size(),
+        allMatches.size() - matches.size());
+    FileSystems.delete(allMatches, StandardMoveOptions.IGNORE_MISSING_FILES);
+
+    // Deletion of the temporary directory might fail, if not all temporary files are removed.
+    try {
+      FileSystems.delete(
+          Collections.singletonList(tempDir), StandardMoveOptions.IGNORE_MISSING_FILES);
+    } catch (Exception e) {
+      LOG.warn("Failed to remove temporary directory: [{}].", tempDir);
+    }
   }
 
   /**

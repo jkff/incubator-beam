@@ -50,11 +50,11 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
   }
 
   /**
-   * Creates an {@link XmlWriteOperation}.
+   * Creates a {@link XmlWriter} with a marshaller for the type it will write.
    */
   @Override
-  public XmlWriteOperation<T> createWriteOperation() {
-    return new XmlWriteOperation<>(this);
+  public XmlWriter<T> createWriter() throws Exception {
+    return new XmlWriter<>(this);
   }
 
   @Override
@@ -66,51 +66,21 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
     super.populateDisplayData(builder);
   }
 
-  /** {@link WriteOperation} for XML {@link FileBasedSink}s. */
-  protected static final class XmlWriteOperation<T> extends WriteOperation<Void, T> {
-    public XmlWriteOperation(XmlSink<T> sink) {
-      super(sink);
-    }
-
-    /**
-     * Creates a {@link XmlWriter} with a marshaller for the type it will write.
-     */
-    @Override
-    public XmlWriter<T> createWriter() throws Exception {
-      JAXBContext context;
-      Marshaller marshaller;
-      context = JAXBContext.newInstance(getSink().spec.getRecordClass());
-      marshaller = context.createMarshaller();
-      marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
-      marshaller.setProperty(Marshaller.JAXB_FRAGMENT, Boolean.TRUE);
-      marshaller.setProperty(Marshaller.JAXB_ENCODING, getSink().spec.getCharset());
-      return new XmlWriter<>(this, getSink().spec.getRootElement(), marshaller);
-    }
-
-    /**
-     * Return the XmlSink.Bound for this write operation.
-     */
-    @Override
-    public XmlSink<T> getSink() {
-      return (XmlSink<T>) super.getSink();
-    }
-
-    @VisibleForTesting
-    ResourceId getTemporaryDirectory() {
-      return this.tempDirectory.get();
-    }
-  }
-
   /** A {@link Writer} that can write objects as XML elements. */
   protected static final class XmlWriter<T> extends Writer<Void, T> {
     final Marshaller marshaller;
     private final String rootElement;
     private OutputStream os = null;
 
-    public XmlWriter(XmlWriteOperation<T> writeOperation, String rootElement, Marshaller marshaller) {
-      super();
-      this.rootElement = rootElement;
-      this.marshaller = marshaller;
+    public XmlWriter(XmlSink<T> sink) throws Exception {
+      this.rootElement = sink.spec.getRootElement();
+
+      JAXBContext context;
+      context = JAXBContext.newInstance(sink.spec.getRecordClass());
+      this.marshaller = context.createMarshaller();
+      marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
+      marshaller.setProperty(Marshaller.JAXB_FRAGMENT, Boolean.TRUE);
+      marshaller.setProperty(Marshaller.JAXB_ENCODING, sink.spec.getCharset());
     }
 
     @Override

@@ -147,7 +147,7 @@ public class WriteWithShardingFactoryTest implements Serializable {
                 StaticValueProvider.of(outputDirectory),
                 DynamicFileDestinations.constant(new FakeFilenamePolicy())) {
               @Override
-              public WriteOperation<Void, Object> createWriteOperation() {
+              public Writer<Void, Object> createWriter() throws Exception {
                 throw new IllegalArgumentException("Should not be used");
               }
             });

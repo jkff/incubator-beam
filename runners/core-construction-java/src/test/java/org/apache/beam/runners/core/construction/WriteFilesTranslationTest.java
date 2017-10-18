@@ -128,8 +128,8 @@ public class WriteFilesTranslationTest {
     }
 
     @Override
-    public WriteOperation<Void, Object> createWriteOperation() {
-      return new DummyWriteOperation(this);
+    public FileBasedSink.Writer<Void, Object> createWriter() throws Exception {
+      throw new UnsupportedOperationException("Should never be called.");
     }
 
     @Override
@@ -150,17 +150,6 @@ public class WriteFilesTranslationTest {
       return Objects.hash(
           DummySink.class,
           getTempDirectoryProvider().isAccessible() ? getTempDirectoryProvider().get() : null);
-    }
-  }
-
-  private static class DummyWriteOperation extends FileBasedSink.WriteOperation<Void, Object> {
-    public DummyWriteOperation(FileBasedSink<Object, Void, Object> sink) {
-      super(sink);
-    }
-
-    @Override
-    public FileBasedSink.Writer<Void, Object> createWriter() throws Exception {
-      throw new UnsupportedOperationException("Should never be called.");
     }
   }
 

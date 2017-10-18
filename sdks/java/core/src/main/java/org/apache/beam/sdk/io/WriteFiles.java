@@ -21,7 +21,9 @@ package org.apache.beam.sdk.io;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions.RESOLVE_FILE;
 
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
@@ -50,7 +52,6 @@ import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.io.FileBasedSink.FileResult;
 import org.apache.beam.sdk.io.FileBasedSink.FileResultCoder;
-import org.apache.beam.sdk.io.FileBasedSink.WriteOperation;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
 import org.apache.beam.sdk.io.fs.ResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
@@ -63,6 +64,7 @@ import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.WithKeys;
 import org.apache.beam.sdk.transforms.display.DisplayData;
@@ -84,6 +86,8 @@ import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.ShardedKey;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.joda.time.Instant;
+import org.joda.time.format.DateTimeFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -93,7 +97,7 @@ import org.slf4j.LoggerFactory;
  * finalization of the write. The output of a write is {@link PDone}.
  *
  * <p>By default, every bundle in the input {@link PCollection} will be processed by a {@link
- * WriteOperation}, so the number of output will vary based on runner behavior, though at least 1
+ * Writer}, so the number of output will vary based on runner behavior, though at least 1
  * output will always be produced. The exact parallelism of the write stage can be controlled using
  * {@link WriteFiles#withNumShards}, typically used to control how many files are produced or to
  * globally limit the number of workers connecting to an external service. However, this option can
@@ -126,7 +130,6 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
   static final int UNKNOWN_SHARDNUM = -1;
   private FileBasedSink<UserT, DestinationT, OutputT> sink;
-  private WriteOperation<DestinationT, OutputT> writeOperation;
   // This allows the number of shards to be dynamically computed based on the input
   // PCollection.
   @Nullable private final PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards;
@@ -190,8 +193,6 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               + "must specify number of output shards explicitly",
           WriteFiles.class.getSimpleName());
     }
-    this.writeOperation = sink.createWriteOperation();
-    this.writeOperation.setWindowedWrites(windowedWrites);
     return createWrite(input);
   }
 
@@ -365,6 +366,15 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     public int hashCode() {
       return Objects.hashCode(window, paneInfo, destination);
     }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("window", window)
+          .add("pane", paneInfo)
+          .add("destination", destination)
+          .toString();
+    }
   }
 
   // Hash the destination in a manner that we can then use as a key in a GBK. Since Java's
@@ -379,22 +389,22 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   }
 
   /**
-   * Writes all the elements in a bundle using a {@link Writer} produced by the {@link
-   * WriteOperation} associated with the {@link FileBasedSink}.
+   * Writes all the elements in a bundle using a {@link Writer} associated with the {@link
+   * FileBasedSink}.
    */
   private class WriteBundles extends DoFn<UserT, FileResult<DestinationT>> {
+    private final ValueProvider<ResourceId> tempDirectory;
     private final TupleTag<KV<ShardedKey<Integer>, UserT>> unwrittenRecordsTag;
     private final Coder<DestinationT> destinationCoder;
-    private final boolean windowedWrites;
 
     private Map<WriterKey<DestinationT>, Writer<DestinationT, OutputT>> writers;
     private int spilledShardNum = UNKNOWN_SHARDNUM;
 
     WriteBundles(
-        boolean windowedWrites,
+        ValueProvider<ResourceId> tempDirectory,
         TupleTag<KV<ShardedKey<Integer>, UserT>> unwrittenRecordsTag,
         Coder<DestinationT> destinationCoder) {
-      this.windowedWrites = windowedWrites;
+      this.tempDirectory = tempDirectory;
       this.unwrittenRecordsTag = unwrittenRecordsTag;
       this.destinationCoder = destinationCoder;
     }
@@ -419,19 +429,12 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       if (writer == null) {
         if (writers.size() <= maxNumWritersPerBundle) {
           ResourceId outputFile =
-              writeOperation.tempDirectory.get().resolve(
-                  UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
-          LOG.info(
-              "Opening writer to {} for write operation {}, window {} pane {} destination {}",
-              outputFile,
-              writeOperation,
-              window,
-              paneInfo,
-              destination);
-          writer = writeOperation.createWriter();
-          writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
+              tempDirectory.get().resolve(
+                  UUID.randomUUID().toString(), RESOLVE_FILE);
+          LOG.info("Opening writer to {} for {}", key);
+          writer = sink.createWriter();
+          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
           writers.put(key, writer);
-          LOG.debug("Done opening writer");
         } else {
           if (spilledShardNum == UNKNOWN_SHARDNUM) {
             // Cache the random value so we only call ThreadLocalRandom once per DoFn instance.
@@ -486,8 +489,12 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    */
   private class WriteShardedBundles
       extends DoFn<KV<ShardedKey<Integer>, Iterable<UserT>>, FileResult<DestinationT>> {
-    ShardAssignment shardNumberAssignment;
-    WriteShardedBundles(ShardAssignment shardNumberAssignment) {
+    private final ValueProvider<ResourceId> tempDirectory;
+    private final ShardAssignment shardNumberAssignment;
+
+    WriteShardedBundles(
+        ValueProvider<ResourceId> tempDirectory, ShardAssignment shardNumberAssignment) {
+      this.tempDirectory = tempDirectory;
       this.shardNumberAssignment = shardNumberAssignment;
     }
 
@@ -511,12 +518,14 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         DestinationT destination = sink.getDynamicDestinations().getDestination(input);
         Writer<DestinationT, OutputT> writer = writers.get(destination);
         if (writer == null) {
-          LOG.debug("Opening writer for write operation {}", writeOperation);
           ResourceId outputFile =
-              writeOperation.tempDirectory.get().resolve(
-                  UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
-          writer = writeOperation.createWriter();
-          writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
+              tempDirectory
+                  .get()
+                  .resolve(
+                      UUID.randomUUID().toString(),
+                      RESOLVE_FILE);
+          writer = sink.createWriter();
+          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
           writers.put(destination, writer);
         }
         writeOrClose(writer, getSink().getDynamicDestinations().formatRecord(input));
@@ -626,43 +635,28 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     }
   }
 
-  Multimap<DestinationT, FileResult<DestinationT>> perDestinationResults(
-      Iterable<FileResult<DestinationT>> results) {
-    Multimap<DestinationT, FileResult<DestinationT>> perDestination = ArrayListMultimap.create();
-    for (FileResult<DestinationT> result : results) {
-      perDestination.put(result.getDestination(), result);
-    }
-    return perDestination;
-  }
-
-  /**
-   * A write is performed as sequence of three {@link ParDo}'s.
-   *
-   * <p>This singleton collection containing the WriteOperation is then used as a side input to a
-   * ParDo over the PCollection of elements to write. In this bundle-writing phase, {@link
-   * WriteOperation#createWriter} is called to obtain a {@link Writer}. {@link Writer#open} and
-   * {@link Writer#close} are called in {@link DoFn.StartBundle} and {@link DoFn.FinishBundle},
-   * respectively, and {@link Writer#write} method is called for every element in the bundle. The
-   * output of this ParDo is a PCollection of <i>writer result</i> objects (see {@link
-   * FileBasedSink} for a description of writer results)-one for each bundle.
-   *
-   * <p>The final do-once ParDo uses a singleton collection asinput and the collection of writer
-   * results as a side-input. In this ParDo, {@link WriteOperation#finalize} is called to finalize
-   * the write.
-   *
-   * <p>If the write of any element in the PCollection fails, {@link Writer#close} will be called
-   * before the exception that caused the write to fail is propagated and the write result will be
-   * discarded.
-   *
-   * <p>Since the {@link WriteOperation} is serialized after the initialization ParDo and
-   * deserialized in the bundle-writing and finalization phases, any state change to the
-   * WriteOperation object that occurs during initialization is visible in the latter phases.
-   * However, the WriteOperation is not serialized after the bundle-writing phase. This is why
-   * implementations should guarantee that {@link WriteOperation#createWriter} does not mutate
-   * WriteOperation).
-   */
   private WriteFilesResult<DestinationT> createWrite(PCollection<UserT> input) {
     Pipeline p = input.getPipeline();
+
+    final Instant now = Instant.now();
+    final String tempDirUuid = UUID.randomUUID().toString();
+    final ValueProvider<ResourceId> tempDirectory =
+        ValueProvider.NestedValueProvider.of(
+            sink.getTempDirectoryProvider(),
+            new SerializableFunction<ResourceId, ResourceId>() {
+              @Override
+              public ResourceId apply(ResourceId input) {
+                // Temp directory has a timestamp and a unique ID
+                String tempDirName =
+                    String.format(
+                        ".temp-beam-%s-%s",
+                        now.toString(DateTimeFormat.forPattern("yyyy-MM-DD_HH-mm-ss")),
+                        tempDirUuid);
+                return input
+                    .getCurrentDirectory()
+                    .resolve(tempDirName, ResolveOptions.StandardResolveOptions.RESOLVE_DIRECTORY);
+              }
+            });
 
     if (!windowedWrites) {
       // Re-window the data into the global window and remove any existing triggers.
@@ -703,7 +697,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       PCollectionTuple writeTuple =
           input.apply(
               writeName,
-              ParDo.of(new WriteBundles(windowedWrites, unwrittedRecordsTag, destinationCoder))
+              ParDo.of(new WriteBundles(tempDirectory, unwrittedRecordsTag, destinationCoder))
                   .withSideInputs(sideInputs)
                   .withOutputTags(writtenRecordsTag, TupleTagList.of(unwrittedRecordsTag)));
       PCollection<FileResult<DestinationT>> writtenBundleFiles =
@@ -719,7 +713,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               .apply("GroupUnwritten", GroupByKey.<ShardedKey<Integer>, UserT>create())
               .apply(
                   "WriteUnwritten",
-                  ParDo.of(new WriteShardedBundles(ShardAssignment.ASSIGN_IN_FINALIZE))
+                  ParDo.of(new WriteShardedBundles(tempDirectory, ShardAssignment.ASSIGN_IN_FINALIZE))
                       .withSideInputs(sideInputs))
               .setCoder(FileResultCoder.of(shardedWindowCoder, destinationCoder));
       results =
@@ -757,7 +751,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       results =
           sharded.apply(
               "WriteShardedBundles",
-              ParDo.of(new WriteShardedBundles(ShardAssignment.ASSIGN_WHEN_WRITING))
+              ParDo.of(new WriteShardedBundles(tempDirectory, ShardAssignment.ASSIGN_WHEN_WRITING))
                   .withSideInputs(sideInputs));
     }
     results.setCoder(FileResultCoder.of(shardedWindowCoder, destinationCoder));
@@ -780,44 +774,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           keyedResults
               .apply("FinalizeGroupByKey", GroupByKey.<Void, FileResult<DestinationT>>create())
               .apply(
-                  "FinalizeWindowed",
-                  ParDo.of(
-                      new DoFn<
-                          KV<Void, Iterable<FileResult<DestinationT>>>,
-                          KV<DestinationT, String>>() {
-                        @ProcessElement
-                        public void processElement(ProcessContext c, BoundedWindow w)
-                            throws Exception {
-                          Set<ResourceId> tempFiles = Sets.newHashSet();
-                          Multimap<DestinationT, FileResult<DestinationT>> results =
-                              perDestinationResults(c.element().getValue());
-                          for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
-                              results.asMap().entrySet()) {
-                            LOG.info(
-                                "Finalizing write operation {} "
-                                    + " for destination {} num shards {} window {} pane {}.",
-                                writeOperation,
-                                entry.getKey(),
-                                entry.getValue().size(),
-                                w,
-                                c.pane());
-                            Map<ResourceId, ResourceId> finalizeMap =
-                                writeOperation.finalize(entry.getValue());
-                            if (!finalizeMap.isEmpty()) {
-                              LOG.info(
-                                  "Example output file: at {}",
-                                  finalizeMap.values().iterator().next());
-                            }
-                            tempFiles.addAll(finalizeMap.keySet());
-                            for (ResourceId outputFile : finalizeMap.values()) {
-                              c.output(KV.of(entry.getKey(), outputFile.toString()));
-                            }
-                            LOG.debug("Done finalizing write operation for {}.", entry.getKey());
-                          }
-                          writeOperation.removeTemporaryFiles(tempFiles);
-                          LOG.debug("Removed temporary files for {}.", writeOperation);
-                        }
-                      }))
+                  "FinalizeWindowed", ParDo.of(new FinalizeWindowedFn<DestinationT>(sink, tempDirectory)))
               .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
     } else {
       final PCollectionView<Iterable<FileResult<DestinationT>>> resultsView =
@@ -838,58 +795,15 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       // set numShards, then all shards will be written out as empty files. For this reason we
       // use a side input here.
       PCollection<Void> singletonCollection = p.apply(Create.of((Void) null));
-      outputFilenames = singletonCollection.apply(
-          "FinalizeUnwindowed",
-          ParDo.of(
-                  new DoFn<Void, KV<DestinationT, String>>() {
-                    @ProcessElement
-                    public void processElement(ProcessContext c) throws Exception {
-                      sink.getDynamicDestinations().setSideInputAccessorFromProcessContext(c);
-                      // We must always output at least 1 shard, and honor user-specified numShards
-                      // if set.
-                      int minShardsNeeded;
-                      if (numShardsView != null) {
-                        minShardsNeeded = c.sideInput(numShardsView);
-                      } else if (numShardsProvider != null) {
-                        minShardsNeeded = numShardsProvider.get();
-                      } else {
-                        minShardsNeeded = 1;
-                      }
-                      Set<ResourceId> tempFiles = Sets.newHashSet();
-                      Multimap<DestinationT, FileResult<DestinationT>> perDestination =
-                          perDestinationResults(c.sideInput(resultsView));
-                      for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
-                          perDestination.asMap().entrySet()) {
-                        Map<ResourceId, ResourceId> finalizeMap = Maps.newHashMap();
-                        finalizeMap.putAll(
-                            finalizeForDestinationFillEmptyShards(
-                                entry.getKey(), entry.getValue(), minShardsNeeded));
-                        tempFiles.addAll(finalizeMap.keySet());
-                        for (ResourceId outputFile :finalizeMap.values()) {
-                          c.output(KV.of(entry.getKey(), outputFile.toString()));
-                        }
-                      }
-                      if (perDestination.isEmpty()) {
-                        // If there is no input at all, write empty files to the default
-                        // destination.
-                        Map<ResourceId, ResourceId> finalizeMap = Maps.newHashMap();
-                        DestinationT destination =
-                            getSink().getDynamicDestinations().getDefaultDestination();
-                        finalizeMap.putAll(
-                            finalizeForDestinationFillEmptyShards(
-                                destination,
-                                Lists.<FileResult<DestinationT>>newArrayList(),
-                                minShardsNeeded));
-                        tempFiles.addAll(finalizeMap.keySet());
-                        for (ResourceId outputFile :finalizeMap.values()) {
-                          c.output(KV.of(destination, outputFile.toString()));
-                        }
-                      }
-                      writeOperation.removeTemporaryFiles(tempFiles);
-                    }
-                  })
-              .withSideInputs(finalizeSideInputs.build()))
-            .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
+      outputFilenames =
+          singletonCollection
+              .apply(
+                  "FinalizeUnwindowed",
+                  ParDo.of(
+                          new FinalizeUnwindowedFn<>(
+                              sink, numShardsView, numShardsProvider, resultsView, tempDirectory))
+                      .withSideInputs(finalizeSideInputs.build()))
+              .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
     }
 
     TupleTag<KV<DestinationT, String>> perDestinationOutputFilenamesTag =
@@ -900,48 +814,146 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         outputFilenames);
   }
 
-  /**
-   * Finalize a list of files for a single destination. If a minimum number of shards is needed,
-   * this function will generate empty files for this destination to ensure that all shards are
-   * generated.
-   */
-  private Map<ResourceId, ResourceId> finalizeForDestinationFillEmptyShards(
-      DestinationT destination, Collection<FileResult<DestinationT>> results, int minShardsNeeded)
-      throws Exception {
-    checkState(!windowedWrites);
+  private static class FinalizeUnwindowedFn<DestinationT>
+      extends DoFn<Void, KV<DestinationT, String>> {
+    private final FileBasedSink<?, DestinationT, ?> sink;
+    private final PCollectionView<Integer> numShardsView;
+    private ValueProvider<Integer> numShardsProvider;
+    private final PCollectionView<Iterable<FileResult<DestinationT>>> resultsView;
+    private final ValueProvider<ResourceId> tempDirectory;
 
-    LOG.info(
-        "Finalizing write operation {}: for destination {} num shards {}.",
-        writeOperation,
-        destination,
-        results.size());
-    int extraShardsNeeded = minShardsNeeded - results.size();
-    if (extraShardsNeeded > 0) {
-      LOG.info(
-          "Creating {} empty output shards in addition to {} written "
-              + "for a total of {} for destination {}.",
-          extraShardsNeeded,
-          results.size(),
-          minShardsNeeded,
-          destination);
-      for (int i = 0; i < extraShardsNeeded; ++i) {
-        ResourceId outputFile =
-            writeOperation.tempDirectory.get().resolve(
-                UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
-        Writer<DestinationT, OutputT> writer = writeOperation.createWriter();
-        writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
-        writer.close();
-        results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
+    public FinalizeUnwindowedFn(
+        FileBasedSink<?, DestinationT, ?> sink,
+        PCollectionView<Integer> numShardsView,
+        ValueProvider<Integer> numShardsProvider,
+        PCollectionView<Iterable<FileResult<DestinationT>>> resultsView,
+        ValueProvider<ResourceId> tempDirectory) {
+      this.sink = sink;
+      this.numShardsView = numShardsView;
+      this.numShardsProvider = numShardsProvider;
+      this.resultsView = resultsView;
+      this.tempDirectory = tempDirectory;
+    }
+
+    @ProcessElement
+    public void processElement(ProcessContext c) throws Exception {
+      sink.getDynamicDestinations()
+          .setSideInputAccessorFromProcessContext(c);
+      // We must always output at least 1 shard, and honor user-specified
+      // numShards if set.
+      int minShardsNeeded;
+      if (numShardsView != null) {
+        minShardsNeeded = c.sideInput(numShardsView);
+      } else if (numShardsProvider != null) {
+        minShardsNeeded = numShardsProvider.get();
+      } else {
+        minShardsNeeded = 1;
       }
-      LOG.debug("Done creating extra shards for {}.", destination);
+      Set<ResourceId> tempFiles = Sets.newHashSet();
+      Multimap<DestinationT, FileResult<DestinationT>> perDestination =
+          perDestinationResults(c.sideInput(resultsView));
+      for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>>
+          entry : perDestination.asMap().entrySet()) {
+        Map<ResourceId, ResourceId> finalizeMap = Maps.newHashMap();
+        finalizeMap.putAll(
+            finalizeForDestinationFillEmptyShards(
+                entry.getKey(), entry.getValue(), minShardsNeeded));
+        tempFiles.addAll(finalizeMap.keySet());
+        for (ResourceId outputFile : finalizeMap.values()) {
+          c.output(KV.of(entry.getKey(), outputFile.toString()));
+        }
+      }
+      if (perDestination.isEmpty()) {
+        // If there is no input at all, write empty files to the default
+        // destination.
+        Map<ResourceId, ResourceId> finalizeMap = Maps.newHashMap();
+        DestinationT destination = sink.getDynamicDestinations().getDefaultDestination();
+        finalizeMap.putAll(
+            finalizeForDestinationFillEmptyShards(
+                destination, Lists.<FileResult<DestinationT>>newArrayList(), minShardsNeeded));
+        tempFiles.addAll(finalizeMap.keySet());
+        for (ResourceId outputFile : finalizeMap.values()) {
+          c.output(KV.of(destination, outputFile.toString()));
+        }
+      }
+      FileBasedSink.removeTemporaryFiles(tempDirectory.get(), tempFiles, true);
     }
-    Map<ResourceId, ResourceId> finalizeMap = writeOperation.finalize(results);
-    if (!finalizeMap.isEmpty()) {
+
+    /**
+     * Finalize a list of files for a single destination. If a minimum number of shards is needed,
+     * this function will generate empty files for this destination to ensure that all shards are
+     * generated.
+     */
+    private Map<ResourceId, ResourceId> finalizeForDestinationFillEmptyShards(
+        DestinationT destination, Collection<FileResult<DestinationT>> results, int minShardsNeeded)
+        throws Exception {
       LOG.info(
-          "Example output file: at {}",
-          finalizeMap.values().iterator().next());
+          "Finalizing write for destination {} num shards {}.",
+          destination,
+          results.size());
+      int extraShardsNeeded = minShardsNeeded - results.size();
+      if (extraShardsNeeded > 0) {
+        LOG.info(
+            "Creating {} empty output shards in addition to {} written "
+                + "for a total of {} for destination {}.",
+            extraShardsNeeded,
+            results.size(),
+            minShardsNeeded,
+            destination);
+        for (int i = 0; i < extraShardsNeeded; ++i) {
+          ResourceId outputFile =
+              tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
+          Writer<DestinationT, ?> writer = sink.createWriter();
+          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
+          writer.close();
+          results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
+        }
+        LOG.debug("Done creating extra shards for {}.", destination);
+      }
+      return sink.finalize(results);
     }
-    LOG.debug("Done finalizing write operation {} for destination {}", writeOperation, destination);
-    return finalizeMap;
+  }
+
+  private static class FinalizeWindowedFn<DestinationT> extends DoFn<
+                            KV<Void, Iterable<FileResult<DestinationT>>>,
+                            KV<DestinationT, String>> {
+    private final FileBasedSink<?, DestinationT, ?> sink;
+    private final ValueProvider<ResourceId> tempDirectory;
+
+    public FinalizeWindowedFn(
+        FileBasedSink<?, DestinationT, ?> sink, ValueProvider<ResourceId> tempDirectory) {
+      this.sink = sink;
+      this.tempDirectory = tempDirectory;
+    }
+
+    @ProcessElement
+    public void processElement(ProcessContext c) throws Exception {
+      Set<ResourceId> tempFiles = Sets.newHashSet();
+      Multimap<DestinationT, FileResult<DestinationT>> results =
+          perDestinationResults(c.element().getValue());
+      for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
+          results.asMap().entrySet()) {
+        LOG.info(
+            "Finalizing write for destination {} num shards: {}.",
+            entry.getKey(),
+            entry.getValue().size());
+        Map<ResourceId, ResourceId> finalizeMap = sink.finalize(entry.getValue());
+        tempFiles.addAll(finalizeMap.keySet());
+        for (ResourceId outputFile : finalizeMap.values()) {
+          c.output(KV.of(entry.getKey(), outputFile.toString()));
+        }
+      }
+      FileBasedSink.removeTemporaryFiles(tempDirectory.get(), tempFiles, false);
+    }
+  }
+
+  private static <DestinationT>
+  Multimap<DestinationT, FileResult<DestinationT>> perDestinationResults(
+      Iterable<FileResult<DestinationT>> results) {
+    Multimap<DestinationT, FileResult<DestinationT>> perDestination = ArrayListMultimap.create();
+    for (FileResult<DestinationT> result : results) {
+      perDestination.put(result.getDestination(), result);
+    }
+    return perDestination;
   }
 }

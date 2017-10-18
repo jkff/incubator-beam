@@ -1314,7 +1314,6 @@ public class DataflowRunnerTest implements Serializable {
                   throw new UnsupportedOperationException("should not be called");
                 }
 
-                @Nullable
                 @Override
                 public ResourceId unwindowedFilename(
                     int shardNumber, int numShards, OutputFileHints outputFileHints) {
@@ -1325,7 +1324,7 @@ public class DataflowRunnerTest implements Serializable {
     }
 
     @Override
-    public WriteOperation<Void, Object> createWriteOperation() {
+    public Writer<Void, Object> createWriter() throws Exception {
       throw new IllegalArgumentException("Should not be used");
     }
   }

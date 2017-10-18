@@ -83,24 +83,8 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
   }
 
   @Override
-  public SimpleWriteOperation<DestinationT> createWriteOperation() {
-    return new SimpleWriteOperation<>(this);
-  }
-
-  static final class SimpleWriteOperation<DestinationT>
-      extends WriteOperation<DestinationT, String> {
-    public SimpleWriteOperation(SimpleSink sink, ResourceId tempOutputDirectory) {
-      super(sink, tempOutputDirectory);
-    }
-
-    public SimpleWriteOperation(SimpleSink sink) {
-      super(sink);
-    }
-
-    @Override
-    public SimpleWriter<DestinationT> createWriter() throws Exception {
-      return new SimpleWriter<>(this);
-    }
+  public SimpleWriter<DestinationT> createWriter() throws Exception {
+    return new SimpleWriter<>();
   }
 
   static final class SimpleWriter<DestinationT> extends Writer<DestinationT, String> {
@@ -108,10 +92,6 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     static final String FOOTER = "footer";
 
     private WritableByteChannel channel;
-
-    public SimpleWriter(SimpleWriteOperation<DestinationT> writeOperation) {
-      super();
-    }
 
     @Override
     protected String getDefaultMimeType() {

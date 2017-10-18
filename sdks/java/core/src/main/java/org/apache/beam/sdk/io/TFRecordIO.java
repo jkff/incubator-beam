@@ -518,30 +518,14 @@ public class TFRecordIO {
     }
 
     @Override
-    public WriteOperation<Void, byte[]> createWriteOperation() {
-      return new TFRecordWriteOperation(this);
-    }
-
-    /** A {@link WriteOperation WriteOperation} for TFRecord files. */
-    private static class TFRecordWriteOperation extends WriteOperation<Void, byte[]> {
-      private TFRecordWriteOperation(TFRecordSink sink) {
-        super(sink);
-      }
-
-      @Override
-      public Writer<Void, byte[]> createWriter() throws Exception {
-        return new TFRecordWriter(this);
-      }
+    public Writer<Void, byte[]> createWriter() throws Exception {
+      return new TFRecordWriter();
     }
 
     /** A {@link Writer Writer} for TFRecord files. */
     private static class TFRecordWriter extends Writer<Void, byte[]> {
       private WritableByteChannel outChannel;
       private TFRecordCodec codec;
-
-      private TFRecordWriter(WriteOperation<Void, byte[]> writeOperation) {
-        super();
-      }
 
       @Override
       protected String getDefaultMimeType() {

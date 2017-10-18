@@ -20,7 +20,6 @@ package org.apache.beam.sdk.io.xml;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
@@ -32,17 +31,13 @@ import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlType;
-import org.apache.beam.sdk.io.xml.XmlSink.XmlWriteOperation;
 import org.apache.beam.sdk.io.xml.XmlSink.XmlWriter;
-import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.junit.Rule;
 import org.junit.Test;
@@ -70,15 +65,13 @@ public class XmlSinkTest {
    */
   @Test
   public void testXmlWriter() throws Exception {
-    PipelineOptions options = PipelineOptionsFactory.create();
-    XmlWriteOperation<Bird> writeOp =
+    XmlWriter<Bird> writer =
         XmlIO.<Bird>write()
             .to(testFilePrefix)
             .withRecordClass(Bird.class)
             .withRootElement("birds")
             .createSink()
-            .createWriteOperation();
-    XmlWriter<Bird> writer = writeOp.createWriter();
+            .createWriter();
 
     List<Bird> bundle =
         Lists.newArrayList(new Bird("bemused", "robin"), new Bird("evasive", "goose"));
@@ -90,15 +83,14 @@ public class XmlSinkTest {
 
   @Test
   public void testXmlWriterCharset() throws Exception {
-    XmlWriteOperation<Bird> writeOp =
+    XmlWriter<Bird> writer =
         XmlIO.<Bird>write()
             .to(testFilePrefix)
             .withRecordClass(Bird.class)
             .withRootElement("birds")
             .withCharset(StandardCharsets.ISO_8859_1)
             .createSink()
-            .createWriteOperation();
-    XmlWriter<Bird> writer = writeOp.createWriter();
+            .createWriter();
 
     List<Bird> bundle = Lists.newArrayList(new Bird("bréche", "pinçon"));
     List<String> lines = Arrays.asList("<birds>", "<bird>", "<species>pinçon</species>",
@@ -146,41 +138,6 @@ public class XmlSinkTest {
   public void testValidateXmlSinkMissingOutputDirectory() {
     thrown.expect(IllegalArgumentException.class);
     XmlIO.<Bird>write().withRecordClass(Bird.class).withRootElement(testRootElement).expand(null);
-  }
-
-  /**
-   * An XML Sink correctly creates an XmlWriteOperation.
-   */
-  @Test
-  public void testCreateWriteOperations() {
-    PipelineOptions options = PipelineOptionsFactory.create();
-    XmlSink<Bird> sink =
-        XmlIO.<Bird>write()
-            .to(testFilePrefix)
-            .withRecordClass(Bird.class)
-            .withRootElement(testRootElement)
-            .createSink();
-    XmlWriteOperation<Bird> writeOp = sink.createWriteOperation();
-    Path outputPath = new File(testFilePrefix).toPath();
-    Path tempPath = new File(writeOp.getTemporaryDirectory().toString()).toPath();
-    assertThat(tempPath.getParent(), equalTo(outputPath.getParent()));
-    assertThat(tempPath.getFileName().toString(), containsString("temp-beam-"));
-  }
-
-  /**
-   * An XmlWriteOperation correctly creates an XmlWriter.
-   */
-  @Test
-  public void testCreateWriter() throws Exception {
-    XmlWriteOperation<Bird> writeOp =
-        XmlIO.<Bird>write()
-            .withRecordClass(Bird.class)
-            .withRootElement(testRootElement)
-            .to(testFilePrefix)
-            .createSink()
-            .createWriteOperation();
-    XmlWriter<Bird> writer = writeOp.createWriter();
-    assertNotNull(writer.marshaller);
   }
 
   @Test
