@@ -71,7 +71,7 @@ public class XmlSinkTest {
             .withRecordClass(Bird.class)
             .withRootElement("birds")
             .createSink()
-            .createWriter();
+            .createWriter(null);
 
     List<Bird> bundle =
         Lists.newArrayList(new Bird("bemused", "robin"), new Bird("evasive", "goose"));
@@ -90,7 +90,7 @@ public class XmlSinkTest {
             .withRootElement("birds")
             .withCharset(StandardCharsets.ISO_8859_1)
             .createSink()
-            .createWriter();
+            .createWriter(null);
 
     List<Bird> bundle = Lists.newArrayList(new Bird("bréche", "pinçon"));
     List<String> lines = Arrays.asList("<birds>", "<bird>", "<species>pinçon</species>",

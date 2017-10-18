@@ -57,8 +57,6 @@ import org.apache.beam.sdk.coders.ShardedKeyCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
-import org.apache.beam.sdk.io.FileBasedSink.FileResult;
-import org.apache.beam.sdk.io.FileBasedSink.FileResultCoder;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.MoveOptions;
@@ -404,7 +402,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     private final TupleTag<KV<ShardedKey<Integer>, UserT>> unwrittenRecordsTag;
     private final Coder<DestinationT> destinationCoder;
 
-    private Map<WriterKey<DestinationT>, Writer<DestinationT, OutputT>> writers;
+    private Map<WriterKey<DestinationT>, Writer<OutputT>> writers;
     private int spilledShardNum = UNKNOWN_SHARDNUM;
 
     WriteBundles(
@@ -432,14 +430,14 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       // the map will only have a single element.
       DestinationT destination = sink.getDynamicDestinations().getDestination(c.element());
       WriterKey<DestinationT> key = new WriterKey<>(window, c.pane(), destination);
-      Writer<DestinationT, OutputT> writer = writers.get(key);
+      Writer<OutputT> writer = writers.get(key);
       if (writer == null) {
         if (writers.size() <= maxNumWritersPerBundle) {
           ResourceId outputFile =
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           LOG.info("Opening writer to {} for {}", key);
-          writer = sink.createWriter();
-          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
+          writer = sink.createWriter(destination);
+          writer.open(outputFile, sink.getWritableByteChannelFactory());
           writers.put(key, writer);
         } else {
           if (spilledShardNum == UNKNOWN_SHARDNUM) {
@@ -461,10 +459,10 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     @FinishBundle
     public void finishBundle(FinishBundleContext c) throws Exception {
-      for (Map.Entry<WriterKey<DestinationT>, Writer<DestinationT, OutputT>> entry :
+      for (Map.Entry<WriterKey<DestinationT>, Writer<OutputT>> entry :
           writers.entrySet()) {
         WriterKey<DestinationT> key = entry.getKey();
-        Writer<DestinationT, OutputT> writer = entry.getValue();
+        Writer<OutputT> writer = entry.getValue();
         try {
           writer.close();
         } catch (Exception e) {
@@ -522,23 +520,23 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       // Since we key by a 32-bit hash of the destination, there might be multiple destinations
       // in this iterable. The number of destinations is generally very small (1000s or less), so
       // there will rarely be hash collisions.
-      Map<DestinationT, Writer<DestinationT, OutputT>> writers = Maps.newHashMap();
+      Map<DestinationT, Writer<OutputT>> writers = Maps.newHashMap();
       for (UserT input : c.element().getValue()) {
         DestinationT destination = sink.getDynamicDestinations().getDestination(input);
-        Writer<DestinationT, OutputT> writer = writers.get(destination);
+        Writer<OutputT> writer = writers.get(destination);
         if (writer == null) {
           ResourceId outputFile =
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
-          writer = sink.createWriter();
-          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
+          writer = sink.createWriter(destination);
+          writer.open(outputFile, sink.getWritableByteChannelFactory());
           writers.put(destination, writer);
         }
         writeOrClose(writer, getSink().getDynamicDestinations().formatRecord(input));
       }
 
       // Close all writers.
-      for (Map.Entry<DestinationT, Writer<DestinationT, OutputT>> entry : writers.entrySet()) {
-        Writer<DestinationT, OutputT> writer = entry.getValue();
+      for (Map.Entry<DestinationT, Writer<OutputT>> entry : writers.entrySet()) {
+        Writer<OutputT> writer = entry.getValue();
         try {
           // Close the writer; if this throws let the error propagate.
           writer.close();
@@ -565,7 +563,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   }
 
   private static <DestinationT, OutputT> void writeOrClose(
-      Writer<DestinationT, OutputT> writer, OutputT t) throws Exception {
+      Writer<OutputT> writer, OutputT t) throws Exception {
     try {
       writer.write(t);
     } catch (Exception e) {
@@ -835,7 +833,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    *
    * @param writerResults the results of writes (FileResult).
    */
-  private static <DestinationT> Map<ResourceId, ResourceId> finalizeResults(
+  static <DestinationT> Map<ResourceId, ResourceId> finalizeResults(
       FileBasedSink<?, DestinationT, ?> sink,
       Iterable<FileResult<DestinationT>> writerResults) throws Exception {
     // Collect names of temporary files and copies them.
@@ -845,7 +843,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   }
 
   @Experimental(Experimental.Kind.FILESYSTEM)
-  private static <DestinationT> Map<ResourceId, ResourceId> buildOutputFilenames(
+  static <DestinationT> Map<ResourceId, ResourceId> buildOutputFilenames(
       FileBasedSink<?, DestinationT, ?> sink,
       Iterable<FileResult<DestinationT>> writerResults) {
     int numShards = Iterables.size(writerResults);
@@ -928,7 +926,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    */
   @VisibleForTesting
   @Experimental(Experimental.Kind.FILESYSTEM)
-  private static void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
+  static void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
     int numFiles = filenames.size();
     if (numFiles > 0) {
       LOG.debug("Copying {} files.", numFiles);
@@ -1031,8 +1029,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         for (int i = 0; i < extraShardsNeeded; ++i) {
           ResourceId outputFile =
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
-          Writer<DestinationT, ?> writer = sink.createWriter();
-          writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
+          Writer<?> writer = sink.createWriter(destination);
+          writer.open(outputFile, sink.getWritableByteChannelFactory());
           writer.close();
           results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
         }
@@ -1101,7 +1099,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    * are thrown, however there are still some scenarios where temporary files might be left.
    */
   @Experimental(Experimental.Kind.FILESYSTEM)
-  private static void removeTemporaryFiles(
+  static void removeTemporaryFiles(
       ResourceId tempDir, Set<ResourceId> knownFiles, boolean shouldRemoveTemporaryDirectory)
       throws IOException {
     LOG.debug("Removing temporary bundle output files in {}.", tempDir);

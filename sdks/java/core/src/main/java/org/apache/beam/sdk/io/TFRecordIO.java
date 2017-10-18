@@ -518,12 +518,12 @@ public class TFRecordIO {
     }
 
     @Override
-    public Writer<Void, byte[]> createWriter() throws Exception {
+    public Writer<byte[]> createWriter(Void dest) throws Exception {
       return new TFRecordWriter();
     }
 
     /** A {@link Writer Writer} for TFRecord files. */
-    private static class TFRecordWriter extends Writer<Void, byte[]> {
+    private static class TFRecordWriter extends Writer<byte[]> {
       private WritableByteChannel outChannel;
       private TFRecordCodec codec;
 

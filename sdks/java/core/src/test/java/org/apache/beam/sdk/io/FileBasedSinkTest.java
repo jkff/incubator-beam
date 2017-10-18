@@ -46,7 +46,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 import org.apache.beam.sdk.io.FileBasedSink.CompressionType;
-import org.apache.beam.sdk.io.FileBasedSink.FileResult;
 import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
 import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
@@ -96,8 +95,8 @@ public class FileBasedSinkTest {
     expected.addAll(values);
     expected.add(SimpleSink.SimpleWriter.FOOTER);
 
-    SimpleSink.SimpleWriter<Void> writer = buildSink().createWriter();
-    writer.open(expectedTempFile, null, CompressionType.UNCOMPRESSED);
+    SimpleSink.SimpleWriter writer = buildSink().createWriter(null);
+    writer.open(expectedTempFile, CompressionType.UNCOMPRESSED);
     for (String value : values) {
       writer.write(value);
     }
@@ -200,8 +199,8 @@ public class FileBasedSinkTest {
     }
 
     ResourceId tempDir = sink.getTempDirectoryProvider().get();
-    FileBasedSink.removeTemporaryFiles(
-        tempDir, sink.finalize(fileResults).keySet(), true);
+    WriteFiles.removeTemporaryFiles(
+        tempDir, WriteFiles.finalizeResults(sink, fileResults).keySet(), true);
 
     for (int i = 0; i < numFiles; i++) {
       ResourceId outputFilename =
@@ -237,7 +236,7 @@ public class FileBasedSinkTest {
       outputFiles.add(outputFile);
     }
 
-    FileBasedSink.removeTemporaryFiles(tempDirectory, Collections.<ResourceId>emptySet(), true);
+    WriteFiles.removeTemporaryFiles(tempDirectory, Collections.<ResourceId>emptySet(), true);
 
     for (int i = 0; i < numFiles; i++) {
       File temporaryFile = temporaryFiles.get(i);
@@ -278,7 +277,7 @@ public class FileBasedSinkTest {
     }
 
     // Copy input files to output files.
-    FileBasedSink.copyToOutputFiles(inputFilePaths);
+    WriteFiles.copyToOutputFiles(inputFilePaths);
 
     // Assert that the contents were copied.
     for (int i = 0; i < expectedOutputPaths.size(); i++) {
@@ -343,7 +342,7 @@ public class FileBasedSinkTest {
               new FileResult<Void>(temp1, 1, null, null, null),
               new FileResult<Void>(temp2, 1, null, null, null),
               new FileResult<Void>(temp3, 1, null, null, null));
-      sink.buildOutputFilenames(results);
+      WriteFiles.buildOutputFilenames(sink, results);
       fail("Should have failed.");
     } catch (IllegalStateException exn) {
       assertEquals("Only generated 1 distinct file names for 3 files.", exn.getMessage());
@@ -467,7 +466,7 @@ public class FileBasedSinkTest {
     ResourceId root = getBaseOutputDirectory();
     SimpleSink<Void> sink = SimpleSink.makeSimpleSink(
         root, "file", "-SS-of-NN", "txt", new DrunkWritableByteChannelFactory());
-    final Writer<Void, String> writer = sink.createWriter();
+    final Writer<String> writer = sink.createWriter(null);
     final ResourceId expectedFile =
         sink.getTempDirectoryProvider().get().resolve(testUid, StandardResolveOptions.RESOLVE_FILE);
 
@@ -481,7 +480,7 @@ public class FileBasedSinkTest {
     expected.add("footer");
     expected.add("footer");
 
-    writer.open(expectedFile, null, CompressionType.UNCOMPRESSED);
+    writer.open(expectedFile, CompressionType.UNCOMPRESSED);
     writer.write("a");
     writer.write("b");
     writer.close();

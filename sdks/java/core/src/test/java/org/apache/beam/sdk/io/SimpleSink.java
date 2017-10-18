@@ -83,11 +83,11 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
   }
 
   @Override
-  public SimpleWriter<DestinationT> createWriter() throws Exception {
-    return new SimpleWriter<>();
+  public SimpleWriter createWriter(DestinationT dest) throws Exception {
+    return new SimpleWriter();
   }
 
-  static final class SimpleWriter<DestinationT> extends Writer<DestinationT, String> {
+  static final class SimpleWriter extends Writer<String> {
     static final String HEADER = "header";
     static final String FOOTER = "footer";
 
@@ -105,21 +105,17 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     @Override
     protected void prepareWrite(WritableByteChannel channel) throws Exception {
       this.channel = channel;
-    }
-
-    @Override
-    protected void writeHeader() throws Exception {
       channel.write(wrap(HEADER));
-    }
-
-    @Override
-    protected void writeFooter() throws Exception {
-      channel.write(wrap(FOOTER));
     }
 
     @Override
     public void write(String value) throws Exception {
       channel.write(wrap(value));
+    }
+
+    @Override
+    protected void finishWrite() throws Exception {
+      channel.write(wrap(FOOTER));
     }
   }
 }

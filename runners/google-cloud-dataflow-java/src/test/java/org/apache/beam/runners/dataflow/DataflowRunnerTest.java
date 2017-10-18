@@ -64,7 +64,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.dataflow.DataflowRunner.StreamingShardedWriteFactory;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineDebugOptions;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
@@ -1324,7 +1323,7 @@ public class DataflowRunnerTest implements Serializable {
     }
 
     @Override
-    public Writer<Void, Object> createWriter() throws Exception {
+    public Writer<Object> createWriter(Void dest) throws Exception {
       throw new IllegalArgumentException("Should not be used");
     }
   }

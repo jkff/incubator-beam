@@ -21,17 +21,12 @@ import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
-import static org.apache.beam.sdk.io.WriteFiles.UNKNOWN_SHARDNUM;
 import static org.apache.beam.sdk.values.TypeDescriptors.extractFromTypeParameters;
 
-import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.channels.WritableByteChannel;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import javax.annotation.Nullable;
@@ -39,12 +34,7 @@ import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.CoderRegistry;
-import org.apache.beam.sdk.coders.NullableCoder;
-import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.coders.StructuredCoder;
-import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.io.fs.MoveOptions.StandardMoveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -56,7 +46,6 @@ import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.HasDisplayData;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
-import org.apache.beam.sdk.transforms.windowing.PaneInfo.PaneInfoCoder;
 import org.apache.beam.sdk.util.MimeTypes;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TypeDescriptor;
@@ -435,10 +424,11 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
   public void validate(PipelineOptions options) {}
 
   /**
-   * Clients must implement to return a subclass of {@link Writer}. This method must not mutate
-   * the state of the object.
+   * Clients must implement to return a subclass of {@link Writer}. This method must not mutate the
+   * state of the object.
    */
-  public abstract Writer<DestinationT, OutputT> createWriter() throws Exception;
+  public abstract Writer<OutputT> createWriter(DestinationT destination)
+      throws Exception;
 
   public void populateDisplayData(DisplayData.Builder builder) {
     getDynamicDestinations().populateDisplayData(builder);
@@ -462,12 +452,11 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
    *
    * @param <OutputT> the type of values to write.
    */
-  public abstract static class Writer<DestinationT, OutputT> {
+  public abstract static class Writer<OutputT> {
     private static final Logger LOG = LoggerFactory.getLogger(Writer.class);
 
     /** The output file for this bundle. May be null if opening failed. */
     private @Nullable ResourceId outputFile;
-    private DestinationT destination;
     private WritableByteChannel channel;
 
     /**
@@ -489,26 +478,13 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
      */
     protected abstract String getDefaultMimeType();
 
-    /**
-     * Writes header at the beginning of output files. Nothing by default; subclasses may override.
-     */
-    protected void writeHeader() throws Exception {}
-
-    /** Writes footer at the end of output files. Nothing by default; subclasses may override. */
-    protected void writeFooter() throws Exception {}
-
-    /**
-     * Called after all calls to {@link #writeHeader}, {@link #write} and {@link #writeFooter}. If
-     * any resources opened in the write processes need to be flushed, flush them here.
-     */
+    /** If any resources opened in the write processes need to be flushed, flush them here. */
     protected void finishWrite() throws Exception {}
 
     /** Initializes writing to the given file. */
-    public final void open(
-        ResourceId outputFile, DestinationT destination,
-        WritableByteChannelFactory factory) throws Exception {
-      LOG.debug("Opening writer for destination {} to file {}", destination, outputFile);
-      this.destination = destination;
+    public final void open(ResourceId outputFile, WritableByteChannelFactory factory)
+        throws Exception {
+      LOG.debug("Opening writer to file {}", outputFile);
       this.outputFile = outputFile;
 
       // The factory may force a MIME type or it may return null, indicating to use the sink's MIME.
@@ -526,7 +502,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
       // the channel if prepareWrite() or writeHeader() fails.
       try {
         prepareWrite(channel);
-        writeHeader();
       } catch (Exception e) {
         closeChannelAndThrow(channel, e);
       }
@@ -577,149 +552,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
       } catch (Exception e) {
         throw new IOException(String.format("Failed closing channel to %s", outputFile), e);
       }
-    }
-
-    /** Return the user destination object for this writer. */
-    public DestinationT getDestination() {
-      return destination;
-    }
-  }
-
-  /**
-   * Result of a single bundle write. Contains the filename produced by the bundle, and if known the
-   * final output filename.
-   */
-  public static final class FileResult<DestinationT> {
-    private final ResourceId tempFilename;
-    private final int shard;
-    private final BoundedWindow window;
-    private final PaneInfo paneInfo;
-    private final DestinationT destination;
-
-    @Experimental(Kind.FILESYSTEM)
-    public FileResult(
-        ResourceId tempFilename,
-        int shard,
-        BoundedWindow window,
-        PaneInfo paneInfo,
-        DestinationT destination) {
-      this.tempFilename = tempFilename;
-      this.shard = shard;
-      this.window = window;
-      this.paneInfo = paneInfo;
-      this.destination = destination;
-    }
-
-    @Experimental(Kind.FILESYSTEM)
-    public ResourceId getTempFilename() {
-      return tempFilename;
-    }
-
-    public int getShard() {
-      return shard;
-    }
-
-    public FileResult<DestinationT> withShard(int shard) {
-      return new FileResult<>(tempFilename, shard, window, paneInfo, destination);
-    }
-
-    public BoundedWindow getWindow() {
-      return window;
-    }
-
-    public PaneInfo getPaneInfo() {
-      return paneInfo;
-    }
-
-    public DestinationT getDestination() {
-      return destination;
-    }
-
-    @Experimental(Kind.FILESYSTEM)
-    public ResourceId getDestinationFile(
-        DynamicDestinations<?, DestinationT, ?> dynamicDestinations,
-        int numShards,
-        OutputFileHints outputFileHints) {
-      checkArgument(getShard() != UNKNOWN_SHARDNUM);
-      checkArgument(numShards > 0);
-      FilenamePolicy policy = dynamicDestinations.getFilenamePolicy(destination);
-      if (getWindow() != null) {
-        return policy.windowedFilename(
-            getShard(), numShards, getWindow(), getPaneInfo(), outputFileHints);
-      } else {
-        return policy.unwindowedFilename(getShard(), numShards, outputFileHints);
-      }
-    }
-
-    public String toString() {
-      return MoreObjects.toStringHelper(FileResult.class)
-          .add("tempFilename", tempFilename)
-          .add("shard", shard)
-          .add("window", window)
-          .add("paneInfo", paneInfo)
-          .toString();
-    }
-  }
-
-  /** A coder for {@link FileResult} objects. */
-  public static final class FileResultCoder<DestinationT>
-      extends StructuredCoder<FileResult<DestinationT>> {
-    private static final Coder<String> FILENAME_CODER = StringUtf8Coder.of();
-    private static final Coder<Integer> SHARD_CODER = VarIntCoder.of();
-    private static final Coder<PaneInfo> PANE_INFO_CODER = NullableCoder.of(PaneInfoCoder.INSTANCE);
-    private final Coder<BoundedWindow> windowCoder;
-    private final Coder<DestinationT> destinationCoder;
-
-    protected FileResultCoder(
-        Coder<BoundedWindow> windowCoder, Coder<DestinationT> destinationCoder) {
-      this.windowCoder = NullableCoder.of(windowCoder);
-      this.destinationCoder = destinationCoder;
-    }
-
-    public static <DestinationT> FileResultCoder<DestinationT> of(
-        Coder<BoundedWindow> windowCoder, Coder<DestinationT> destinationCoder) {
-      return new FileResultCoder<>(windowCoder, destinationCoder);
-    }
-
-    @Override
-    public List<? extends Coder<?>> getCoderArguments() {
-      return Arrays.asList(windowCoder);
-    }
-
-    @Override
-    public void encode(FileResult<DestinationT> value, OutputStream outStream) throws IOException {
-      if (value == null) {
-        throw new CoderException("cannot encode a null value");
-      }
-      FILENAME_CODER.encode(value.getTempFilename().toString(), outStream);
-      windowCoder.encode(value.getWindow(), outStream);
-      PANE_INFO_CODER.encode(value.getPaneInfo(), outStream);
-      SHARD_CODER.encode(value.getShard(), outStream);
-      destinationCoder.encode(value.getDestination(), outStream);
-    }
-
-    @Override
-    public FileResult<DestinationT> decode(InputStream inStream) throws IOException {
-      String tempFilename = FILENAME_CODER.decode(inStream);
-      BoundedWindow window = windowCoder.decode(inStream);
-      PaneInfo paneInfo = PANE_INFO_CODER.decode(inStream);
-      int shard = SHARD_CODER.decode(inStream);
-      DestinationT destination = destinationCoder.decode(inStream);
-      return new FileResult<>(
-          FileSystems.matchNewResource(tempFilename, false /* isDirectory */),
-          shard,
-          window,
-          paneInfo,
-          destination);
-    }
-
-    @Override
-    public void verifyDeterministic() throws NonDeterministicException {
-      FILENAME_CODER.verifyDeterministic();
-      windowCoder.verifyDeterministic();
-      PANE_INFO_CODER.verifyDeterministic();
-      SHARD_CODER.verifyDeterministic();
-      destinationCoder.verifyDeterministic();
     }
   }
 

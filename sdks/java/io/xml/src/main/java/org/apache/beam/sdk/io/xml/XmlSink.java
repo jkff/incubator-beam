@@ -17,7 +17,6 @@
  */
 package org.apache.beam.sdk.io.xml;
 
-import com.google.common.annotations.VisibleForTesting;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
@@ -28,7 +27,6 @@ import org.apache.beam.sdk.io.DefaultFilenamePolicy;
 import org.apache.beam.sdk.io.DynamicFileDestinations;
 import org.apache.beam.sdk.io.FileBasedSink;
 import org.apache.beam.sdk.io.ShardNameTemplate;
-import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.util.MimeTypes;
@@ -53,7 +51,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
    * Creates a {@link XmlWriter} with a marshaller for the type it will write.
    */
   @Override
-  public XmlWriter<T> createWriter() throws Exception {
+  public XmlWriter<T> createWriter(Void dest) throws Exception {
     return new XmlWriter<>(this);
   }
 
@@ -67,7 +65,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
   }
 
   /** A {@link Writer} that can write objects as XML elements. */
-  protected static final class XmlWriter<T> extends Writer<Void, T> {
+  protected static final class XmlWriter<T> extends Writer<T> {
     final Marshaller marshaller;
     private final String rootElement;
     private OutputStream os = null;
@@ -94,22 +92,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
     @Override
     protected void prepareWrite(WritableByteChannel channel) throws Exception {
       os = Channels.newOutputStream(channel);
-    }
-
-    /**
-     * Writes the root element opening tag.
-     */
-    @Override
-    protected void writeHeader() throws Exception {
       os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "<" + rootElement + ">\n"));
-    }
-
-    /**
-     * Writes the root element closing tag.
-     */
-    @Override
-    protected void writeFooter() throws Exception {
-      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "\n</" + rootElement + ">"));
     }
 
     /**
@@ -118,6 +101,15 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
     @Override
     public void write(T value) throws Exception {
       marshaller.marshal(value, os);
+    }
+
+    /**
+     * Writes the root element closing tag.
+     */
+    @Override
+    protected void finishWrite() throws Exception {
+      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "\n</" + rootElement + ">"));
+      os.flush();
     }
   }
 }

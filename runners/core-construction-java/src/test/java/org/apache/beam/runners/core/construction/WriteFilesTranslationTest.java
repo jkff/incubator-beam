@@ -128,7 +128,7 @@ public class WriteFilesTranslationTest {
     }
 
     @Override
-    public FileBasedSink.Writer<Void, Object> createWriter() throws Exception {
+    public FileBasedSink.Writer<Object> createWriter(Void dest) throws Exception {
       throw new UnsupportedOperationException("Should never be called.");
     }
 
