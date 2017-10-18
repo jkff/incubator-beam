@@ -50,6 +50,7 @@ import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
 import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
+import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.deflate.DeflateCompressorInputStream;
 import org.junit.Rule;
@@ -198,9 +199,8 @@ public class FileBasedSinkTest {
               null));
     }
 
-    ResourceId tempDir = sink.getTempDirectoryProvider().get();
     WriteFiles.removeTemporaryFiles(
-        tempDir,
+        getBaseOutputDirectory(),
         WriteFiles.finalizeResults(sink, CompressionType.UNCOMPRESSED, fileResults).keySet(),
         true);
 
@@ -213,7 +213,7 @@ public class FileBasedSinkTest {
       assertFalse(temporaryFiles.get(i).exists());
     }
 
-    assertFalse(new File(tempDir.toString()).exists());
+    assertFalse(new File(getBaseOutputDirectory().toString()).exists());
   }
 
   /**
@@ -464,7 +464,7 @@ public class FileBasedSinkTest {
     SimpleSink<Void> sink = SimpleSink.makeSimpleSink(root, "file", "-SS-of-NN", "txt");
     final Writer<String> writer = sink.createWriter(null);
     final ResourceId expectedFile =
-        sink.getTempDirectoryProvider().get().resolve(testUid, StandardResolveOptions.RESOLVE_FILE);
+        root.resolve(testUid, StandardResolveOptions.RESOLVE_FILE);
 
     final List<String> expected = new ArrayList<>();
     expected.add("header");

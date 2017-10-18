@@ -140,12 +140,9 @@ public class WriteWithShardingFactoryTest implements Serializable {
 
   @Test
   public void withNoShardingSpecifiedReturnsNewTransform() {
-    ResourceId outputDirectory = LocalResources.fromString("/foo", true /* isDirectory */);
-
     PTransform<PCollection<Object>, WriteFilesResult<Void>> original =
         WriteFiles.to(
             new FileBasedSink<Object, Void, Object>(
-                StaticValueProvider.of(outputDirectory),
                 DynamicFileDestinations.constant(new FakeFilenamePolicy())) {
               @Override
               public Writer<Object> createWriter(Void dest) throws Exception {

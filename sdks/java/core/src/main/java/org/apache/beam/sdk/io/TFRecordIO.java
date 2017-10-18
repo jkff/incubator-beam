@@ -506,7 +506,6 @@ public class TFRecordIO {
         @Nullable String shardTemplate,
         @Nullable String suffix) {
       super(
-          outputPrefix,
           DynamicFileDestinations.<byte[]>constant(
               DefaultFilenamePolicy.fromStandardParameters(
                   outputPrefix, shardTemplate, suffix, false)));

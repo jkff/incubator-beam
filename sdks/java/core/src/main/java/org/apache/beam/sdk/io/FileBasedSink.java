@@ -124,8 +124,6 @@ import org.slf4j.LoggerFactory;
 @Deprecated
 public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     implements Serializable, HasDisplayData {
-  private static final Logger LOG = LoggerFactory.getLogger(FileBasedSink.class);
-
   /** @deprecated use {@link Compression}. */
   @Deprecated
   public enum CompressionType implements WritableByteChannelFactory {
@@ -358,23 +356,10 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     public void populateDisplayData(DisplayData.Builder builder) {}
   }
 
-  /** The directory to which files will be written. */
-  private final ValueProvider<ResourceId> tempDirectoryProvider;
-
-  private static class ExtractDirectory implements SerializableFunction<ResourceId, ResourceId> {
-    @Override
-    public ResourceId apply(ResourceId input) {
-      return input.getCurrentDirectory();
-    }
-  }
-
   /** Construct a {@link FileBasedSink} with the given temp directory and output channel type. */
   @Experimental(Kind.FILESYSTEM)
   public FileBasedSink(
-      ValueProvider<ResourceId> tempDirectoryProvider,
       DynamicDestinations<?, DestinationT, OutputT> dynamicDestinations) {
-    this.tempDirectoryProvider =
-        NestedValueProvider.of(tempDirectoryProvider, new ExtractDirectory());
     this.dynamicDestinations = checkNotNull(dynamicDestinations);
   }
 
@@ -382,15 +367,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
   @SuppressWarnings("unchecked")
   public DynamicDestinations<UserT, DestinationT, OutputT> getDynamicDestinations() {
     return (DynamicDestinations<UserT, DestinationT, OutputT>) dynamicDestinations;
-  }
-
-  /**
-   * Returns the directory inside which temprary files will be written according to the configured
-   * {@link FilenamePolicy}.
-   */
-  @Experimental(Kind.FILESYSTEM)
-  public ValueProvider<ResourceId> getTempDirectoryProvider() {
-    return tempDirectoryProvider;
   }
 
   public void validate(PipelineOptions options) {}

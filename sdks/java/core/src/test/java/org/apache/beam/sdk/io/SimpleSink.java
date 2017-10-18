@@ -29,16 +29,12 @@ import org.apache.beam.sdk.util.MimeTypes;
  * A simple {@link FileBasedSink} that writes {@link String} values as lines with header and footer.
  */
 class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, String> {
-  public SimpleSink(
-      ResourceId tempDirectory,
-      DynamicDestinations<String, DestinationT, String> dynamicDestinations) {
-    super(StaticValueProvider.of(tempDirectory), dynamicDestinations);
+  public SimpleSink(DynamicDestinations<String, DestinationT, String> dynamicDestinations) {
+    super(dynamicDestinations);
   }
 
-  public static SimpleSink<Void> makeSimpleSink(
-      ResourceId tempDirectory, FilenamePolicy filenamePolicy) {
+  public static SimpleSink<Void> makeSimpleSink(FilenamePolicy filenamePolicy) {
     return new SimpleSink<>(
-        tempDirectory,
         DynamicFileDestinations.<String>constant(filenamePolicy));
   }
 
@@ -55,7 +51,7 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
                         baseDirectory.resolve(prefix, StandardResolveOptions.RESOLVE_FILE))
                     .withShardTemplate(shardTemplate)
                     .withSuffix(suffix)));
-    return new SimpleSink<>(baseDirectory, dynamicDestinations);
+    return new SimpleSink<>(dynamicDestinations);
   }
 
   @Override

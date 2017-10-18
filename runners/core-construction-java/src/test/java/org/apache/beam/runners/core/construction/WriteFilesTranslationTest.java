@@ -123,7 +123,6 @@ public class WriteFilesTranslationTest {
 
     DummySink() {
       super(
-          StaticValueProvider.of(FileSystems.matchNewResource("nowhere", false)),
           DynamicFileDestinations.constant(
               new DummyFilenamePolicy(), SerializableFunctions.constant(null)));
     }
@@ -135,22 +134,12 @@ public class WriteFilesTranslationTest {
 
     @Override
     public boolean equals(Object other) {
-      if (!(other instanceof DummySink)) {
-        return false;
-      }
-
-      DummySink that = (DummySink) other;
-
-      return getTempDirectoryProvider().isAccessible()
-          && that.getTempDirectoryProvider().isAccessible()
-          && getTempDirectoryProvider().get().equals(that.getTempDirectoryProvider().get());
+      return true;
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(
-          DummySink.class,
-          getTempDirectoryProvider().isAccessible() ? getTempDirectoryProvider().get() : null);
+      return 0;
     }
   }
 

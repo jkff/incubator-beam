@@ -139,6 +139,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   static final int UNKNOWN_SHARDNUM = -1;
   private final FileBasedSink<UserT, DestinationT, OutputT> sink;
   private final WritableByteChannelFactory writableByteChannelFactory;
+  private final ValueProvider<ResourceId> baseOutputDir;
   // This allows the number of shards to be dynamically computed based on the input
   // PCollection.
   @Nullable private final PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards;
@@ -161,6 +162,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         FileBasedSink.CompressionType.fromCanonical(Compression.UNCOMPRESSED),
+        null /* baseOutputDir */,
         null /* runner-determined sharding */,
         null,
         false,
@@ -171,6 +173,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   private WriteFiles(
       FileBasedSink<UserT, DestinationT, OutputT> sink,
       WritableByteChannelFactory writableByteChannelFactory,
+      ValueProvider<ResourceId> baseOutputDir,
       @Nullable PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards,
       @Nullable ValueProvider<Integer> numShardsProvider,
       boolean windowedWrites,
@@ -178,6 +181,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       Collection<PCollectionView<?>> sideInputs) {
     this.sink = sink;
     this.writableByteChannelFactory = writableByteChannelFactory;
+    this.baseOutputDir = baseOutputDir;
     this.computeNumShards = computeNumShards;
     this.numShardsProvider = numShardsProvider;
     this.windowedWrites = windowedWrites;
@@ -281,6 +285,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -294,6 +299,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -306,6 +312,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -327,6 +334,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         sharding,
         null,
         windowedWrites,
@@ -342,6 +350,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         null,
         null,
         windowedWrites,
@@ -365,6 +374,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
         computeNumShards,
         numShardsProvider,
         true,
@@ -382,6 +392,20 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return new WriteFiles<>(
         sink,
         writableByteChannelFactory,
+        baseOutputDir,
+        computeNumShards,
+        numShardsProvider,
+        true,
+        maxNumWritersPerBundle,
+        sideInputs);
+  }
+
+  public WriteFiles<UserT, DestinationT, OutputT> withBaseOutputDirectory(
+      ValueProvider<ResourceId> baseOutputDir) {
+    return new WriteFiles<>(
+        sink,
+        writableByteChannelFactory,
+        baseOutputDir,
         computeNumShards,
         numShardsProvider,
         true,
@@ -466,7 +490,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     @ProcessElement
     public void processElement(ProcessContext c, BoundedWindow window) throws Exception {
-      PaneInfo paneInfo = c.pane();
+      sink.getDynamicDestinations().setSideInputAccessorFromProcessContext(c);
       // If we are doing windowed writes, we need to ensure that we have separate files for
       // data in different windows/panes. Similar for dynamic writes, make sure that different
       // destinations go to different writers.
@@ -689,7 +713,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     final String tempDirUuid = UUID.randomUUID().toString();
     final ValueProvider<ResourceId> tempDirectory =
         ValueProvider.NestedValueProvider.of(
-            sink.getTempDirectoryProvider(),
+            baseOutputDir,
             new SerializableFunction<ResourceId, ResourceId>() {
               @Override
               public ResourceId apply(ResourceId input) {
