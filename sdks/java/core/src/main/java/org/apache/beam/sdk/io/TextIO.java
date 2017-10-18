@@ -52,6 +52,7 @@ import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.Watch.Growth.TerminationCondition;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.util.MimeTypes;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
@@ -916,6 +917,11 @@ public class TextIO {
 
     private transient WritableByteChannel channel;
     private transient PrintWriter writer;
+
+    @Override
+    public String getDefaultMimeType() {
+      return MimeTypes.TEXT;
+    }
 
     @Override
     public void open(WritableByteChannel channel) throws IOException {

@@ -486,7 +486,7 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
       try {
         finishWrite();
       } catch (Exception e) {
-        closeChannelAndThrow(channel, outputFile, e);
+        closeChannelAndThrow(channel, e);
       }
 
       LOG.debug("Closing channel to {}.", outputFile);

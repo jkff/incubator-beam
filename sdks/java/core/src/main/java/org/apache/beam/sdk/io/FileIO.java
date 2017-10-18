@@ -680,6 +680,8 @@ public class FileIO {
      * channel.
      */
     void flush() throws IOException;
+
+    String getDefaultMimeType();
   }
 
   /** Implementation of {@link #write} and {@link #writeDynamic}. */
@@ -1157,42 +1159,38 @@ public class FileIO {
 
       private ViaFileBasedSink(
           Write<DestinationT, UserT> spec, Coder<DestinationT> destinationCoder) {
-        super(
-            spec.getTempDirectoryProvider(),
-            new DynamicDestinationsAdapter<UserT, DestinationT, OutputT>(spec, destinationCoder),
-            spec.getCompression());
+        super(new DynamicDestinationsAdapter<UserT, DestinationT, OutputT>(spec, destinationCoder));
         this.sinkFn = (Fn) spec.getSinkFn().getClosure();
       }
 
       @Override
-      public WriteOperation<DestinationT, OutputT> createWriteOperation() {
-        return new WriteOperation<DestinationT, OutputT>(this) {
+      public Writer<OutputT> createWriter(final DestinationT destination) throws Exception {
+        return new Writer<OutputT>() {
+          Sink<OutputT> sink = sinkFn.apply(destination, new Fn.Context() {
+            @Override
+            public <T> T sideInput(PCollectionView<T> view) {
+              return getDynamicDestinations().sideInput(view);
+            }
+          });
+
           @Override
-          public Writer<DestinationT, OutputT> createWriter() throws Exception {
-            return new Writer<DestinationT, OutputT>(this, "") {
-              private Sink<OutputT> sink;
+          protected String getDefaultMimeType() {
+            return sink.getDefaultMimeType();
+          }
 
-              @Override
-              protected void prepareWrite(WritableByteChannel channel) throws Exception {
-                sink = sinkFn.apply(getDestination(), new Fn.Context() {
-                  @Override
-                  public <T> T sideInput(PCollectionView<T> view) {
-                    return getWriteOperation().getSink().getDynamicDestinations().sideInput(view);
-                  }
-                });
-                sink.open(channel);
-              }
+          @Override
+          protected void prepareWrite(WritableByteChannel channel) throws Exception {
+            sink.open(channel);
+          }
 
-              @Override
-              public void write(OutputT value) throws Exception {
-                sink.write(value);
-              }
+          @Override
+          public void write(OutputT value) throws Exception {
+            sink.write(value);
+          }
 
-              @Override
-              protected void finishWrite() throws Exception {
-                sink.flush();
-              }
-            };
+          @Override
+          protected void finishWrite() throws Exception {
+            sink.flush();
           }
         };
       }
