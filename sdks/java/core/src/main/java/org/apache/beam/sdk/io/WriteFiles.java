@@ -57,6 +57,7 @@ import org.apache.beam.sdk.coders.ShardedKeyCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
+import org.apache.beam.sdk.io.FileBasedSink.WritableByteChannelFactory;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.MoveOptions;
@@ -136,7 +137,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   private static final int SPILLED_RECORD_SHARDING_FACTOR = 10;
 
   static final int UNKNOWN_SHARDNUM = -1;
-  private FileBasedSink<UserT, DestinationT, OutputT> sink;
+  private final FileBasedSink<UserT, DestinationT, OutputT> sink;
+  private final WritableByteChannelFactory writableByteChannelFactory;
   // This allows the number of shards to be dynamically computed based on the input
   // PCollection.
   @Nullable private final PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards;
@@ -158,6 +160,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     checkArgument(sink != null, "sink can not be null");
     return new WriteFiles<>(
         sink,
+        FileBasedSink.CompressionType.fromCanonical(Compression.UNCOMPRESSED),
         null /* runner-determined sharding */,
         null,
         false,
@@ -167,12 +170,14 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
   private WriteFiles(
       FileBasedSink<UserT, DestinationT, OutputT> sink,
+      WritableByteChannelFactory writableByteChannelFactory,
       @Nullable PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards,
       @Nullable ValueProvider<Integer> numShardsProvider,
       boolean windowedWrites,
       int maxNumWritersPerBundle,
       Collection<PCollectionView<?>> sideInputs) {
     this.sink = sink;
+    this.writableByteChannelFactory = writableByteChannelFactory;
     this.computeNumShards = computeNumShards;
     this.numShardsProvider = numShardsProvider;
     this.windowedWrites = windowedWrites;
@@ -275,6 +280,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       ValueProvider<Integer> numShardsProvider) {
     return new WriteFiles<>(
         sink,
+        writableByteChannelFactory,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -287,6 +293,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       int maxNumWritersPerBundle) {
     return new WriteFiles<>(
         sink,
+        writableByteChannelFactory,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -298,6 +305,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       Collection<PCollectionView<?>> sideInputs) {
     return new WriteFiles<>(
         sink,
+        writableByteChannelFactory,
         computeNumShards,
         numShardsProvider,
         windowedWrites,
@@ -317,7 +325,13 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     checkArgument(
         sharding != null, "sharding can not be null. Use withRunnerDeterminedSharding() instead.");
     return new WriteFiles<>(
-        sink, sharding, null, windowedWrites, maxNumWritersPerBundle, sideInputs);
+        sink,
+        writableByteChannelFactory,
+        sharding,
+        null,
+        windowedWrites,
+        maxNumWritersPerBundle,
+        sideInputs);
   }
 
   /**
@@ -325,7 +339,14 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    * runner-determined sharding.
    */
   public WriteFiles<UserT, DestinationT, OutputT> withRunnerDeterminedSharding() {
-    return new WriteFiles<>(sink, null, null, windowedWrites, maxNumWritersPerBundle, sideInputs);
+    return new WriteFiles<>(
+        sink,
+        writableByteChannelFactory,
+        null,
+        null,
+        windowedWrites,
+        maxNumWritersPerBundle,
+        sideInputs);
   }
 
   /**
@@ -342,7 +363,30 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    */
   public WriteFiles<UserT, DestinationT, OutputT> withWindowedWrites() {
     return new WriteFiles<>(
-        sink, computeNumShards, numShardsProvider, true, maxNumWritersPerBundle, sideInputs);
+        sink,
+        writableByteChannelFactory,
+        computeNumShards,
+        numShardsProvider,
+        true,
+        maxNumWritersPerBundle,
+        sideInputs);
+  }
+
+  public WriteFiles<UserT, DestinationT, OutputT> withCompression(
+      Compression compression) {
+    return withCompression(FileBasedSink.CompressionType.fromCanonical(compression));
+  }
+
+  public WriteFiles<UserT, DestinationT, OutputT> withCompression(
+      WritableByteChannelFactory writableByteChannelFactory) {
+    return new WriteFiles<>(
+        sink,
+        writableByteChannelFactory,
+        computeNumShards,
+        numShardsProvider,
+        true,
+        maxNumWritersPerBundle,
+        sideInputs);
   }
 
   private static class WriterKey<DestinationT> {
@@ -437,7 +481,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           LOG.info("Opening writer to {} for {}", key);
           writer = sink.createWriter(destination);
-          writer.open(outputFile, sink.getWritableByteChannelFactory());
+          writer.open(outputFile, writableByteChannelFactory);
           writers.put(key, writer);
         } else {
           if (spilledShardNum == UNKNOWN_SHARDNUM) {
@@ -528,7 +572,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           ResourceId outputFile =
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           writer = sink.createWriter(destination);
-          writer.open(outputFile, sink.getWritableByteChannelFactory());
+          writer.open(outputFile, writableByteChannelFactory);
           writers.put(destination, writer);
         }
         writeOrClose(writer, getSink().getDynamicDestinations().formatRecord(input));
@@ -779,7 +823,9 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               .apply("FinalizeGroupByKey", GroupByKey.<Void, FileResult<DestinationT>>create())
               .apply(
                   "FinalizeWindowed",
-                  ParDo.of(new FinalizeWindowedFn<DestinationT>(sink, tempDirectory)))
+                  ParDo.of(
+                      new FinalizeWindowedFn<DestinationT>(
+                          sink, writableByteChannelFactory, tempDirectory)))
               .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
     } else {
       final PCollectionView<Iterable<FileResult<DestinationT>>> resultsView =
@@ -806,7 +852,12 @@ public class WriteFiles<UserT, DestinationT, OutputT>
                   "FinalizeUnwindowed",
                   ParDo.of(
                           new FinalizeUnwindowedFn<>(
-                              sink, numShardsView, numShardsProvider, resultsView, tempDirectory))
+                              sink,
+                              writableByteChannelFactory,
+                              numShardsView,
+                              numShardsProvider,
+                              resultsView,
+                              tempDirectory))
                       .withSideInputs(finalizeSideInputs.build()))
               .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
     }
@@ -835,9 +886,11 @@ public class WriteFiles<UserT, DestinationT, OutputT>
    */
   static <DestinationT> Map<ResourceId, ResourceId> finalizeResults(
       FileBasedSink<?, DestinationT, ?> sink,
+      WritableByteChannelFactory writableByteChannelFactory,
       Iterable<FileResult<DestinationT>> writerResults) throws Exception {
     // Collect names of temporary files and copies them.
-    Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(sink, writerResults);
+    Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(
+        sink, writableByteChannelFactory, writerResults);
     copyToOutputFiles(outputFilenames);
     return outputFilenames;
   }
@@ -845,6 +898,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   @Experimental(Experimental.Kind.FILESYSTEM)
   static <DestinationT> Map<ResourceId, ResourceId> buildOutputFilenames(
       FileBasedSink<?, DestinationT, ?> sink,
+      WritableByteChannelFactory writableByteChannelFactory,
       Iterable<FileResult<DestinationT>> writerResults) {
     int numShards = Iterables.size(writerResults);
     Map<ResourceId, ResourceId> outputFilenames = Maps.newHashMap();
@@ -900,7 +954,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       outputFilenames.put(
           result.getTempFilename(),
           result.getDestinationFile(
-              sink.getDynamicDestinations(), numShards, sink.getWritableByteChannelFactory()));
+              sink.getDynamicDestinations(), numShards, writableByteChannelFactory));
     }
 
     int numDistinctShards = new HashSet<>(outputFilenames.values()).size();
@@ -947,6 +1001,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   private static class FinalizeUnwindowedFn<DestinationT>
       extends DoFn<Void, KV<DestinationT, String>> {
     private final FileBasedSink<?, DestinationT, ?> sink;
+    private final WritableByteChannelFactory writableByteChannelFactory;
     private final PCollectionView<Integer> numShardsView;
     private ValueProvider<Integer> numShardsProvider;
     private final PCollectionView<Iterable<FileResult<DestinationT>>> resultsView;
@@ -954,11 +1009,13 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     public FinalizeUnwindowedFn(
         FileBasedSink<?, DestinationT, ?> sink,
+        WritableByteChannelFactory writableByteChannelFactory,
         PCollectionView<Integer> numShardsView,
         ValueProvider<Integer> numShardsProvider,
         PCollectionView<Iterable<FileResult<DestinationT>>> resultsView,
         ValueProvider<ResourceId> tempDirectory) {
       this.sink = sink;
+      this.writableByteChannelFactory = writableByteChannelFactory;
       this.numShardsView = numShardsView;
       this.numShardsProvider = numShardsProvider;
       this.resultsView = resultsView;
@@ -1030,24 +1087,28 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           ResourceId outputFile =
               tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           Writer<?> writer = sink.createWriter(destination);
-          writer.open(outputFile, sink.getWritableByteChannelFactory());
+          writer.open(outputFile, writableByteChannelFactory);
           writer.close();
           results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
         }
         LOG.debug("Done creating extra shards for {}.", destination);
       }
-      return finalizeResults(sink, results);
+      return finalizeResults(sink, writableByteChannelFactory, results);
     }
   }
 
   private static class FinalizeWindowedFn<DestinationT>
       extends DoFn<KV<Void, Iterable<FileResult<DestinationT>>>, KV<DestinationT, String>> {
     private final FileBasedSink<?, DestinationT, ?> sink;
+    private final WritableByteChannelFactory writableByteChannelFactory;
     private final ValueProvider<ResourceId> tempDirectory;
 
     public FinalizeWindowedFn(
-        FileBasedSink<?, DestinationT, ?> sink, ValueProvider<ResourceId> tempDirectory) {
+        FileBasedSink<?, DestinationT, ?> sink,
+        WritableByteChannelFactory writableByteChannelFactory,
+        ValueProvider<ResourceId> tempDirectory) {
       this.sink = sink;
+      this.writableByteChannelFactory = writableByteChannelFactory;
       this.tempDirectory = tempDirectory;
     }
 
@@ -1062,7 +1123,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
             "Finalizing write for destination {} num shards: {}.",
             entry.getKey(),
             entry.getValue().size());
-        Map<ResourceId, ResourceId> finalizeMap = finalizeResults(sink, entry.getValue());
+        Map<ResourceId, ResourceId> finalizeMap =
+            finalizeResults(sink, writableByteChannelFactory, entry.getValue());
         tempFiles.addAll(finalizeMap.keySet());
         for (ResourceId outputFile : finalizeMap.values()) {
           c.output(KV.of(entry.getKey(), outputFile.toString()));

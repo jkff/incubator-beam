@@ -200,7 +200,9 @@ public class FileBasedSinkTest {
 
     ResourceId tempDir = sink.getTempDirectoryProvider().get();
     WriteFiles.removeTemporaryFiles(
-        tempDir, WriteFiles.finalizeResults(sink, fileResults).keySet(), true);
+        tempDir,
+        WriteFiles.finalizeResults(sink, CompressionType.UNCOMPRESSED, fileResults).keySet(),
+        true);
 
     for (int i = 0; i < numFiles; i++) {
       ResourceId outputFilename =
@@ -301,9 +303,7 @@ public class FileBasedSinkTest {
     List<ResourceId> actual;
     ResourceId root = getBaseOutputDirectory();
 
-    SimpleSink<Void> sink =
-        SimpleSink.makeSimpleSink(
-            root, "file", ".SSSSS.of.NNNNN", ".test", Compression.UNCOMPRESSED);
+    SimpleSink<Void> sink = SimpleSink.makeSimpleSink(root, "file", ".SSSSS.of.NNNNN", ".test");
     FilenamePolicy policy = sink.getDynamicDestinations().getFilenamePolicy(null);
 
     expected =
@@ -329,8 +329,7 @@ public class FileBasedSinkTest {
   @Test
   public void testCollidingOutputFilenames() throws IOException {
     ResourceId root = getBaseOutputDirectory();
-    SimpleSink<Void> sink =
-        SimpleSink.makeSimpleSink(root, "file", "-NN", "test", Compression.UNCOMPRESSED);
+    SimpleSink<Void> sink = SimpleSink.makeSimpleSink(root, "file", "-NN", "test");
 
     ResourceId temp1 = root.resolve("temp1", StandardResolveOptions.RESOLVE_FILE);
     ResourceId temp2 = root.resolve("temp2", StandardResolveOptions.RESOLVE_FILE);
@@ -342,7 +341,7 @@ public class FileBasedSinkTest {
               new FileResult<Void>(temp1, 1, null, null, null),
               new FileResult<Void>(temp2, 1, null, null, null),
               new FileResult<Void>(temp3, 1, null, null, null));
-      WriteFiles.buildOutputFilenames(sink, results);
+      WriteFiles.buildOutputFilenames(sink, CompressionType.UNCOMPRESSED, results);
       fail("Should have failed.");
     } catch (IllegalStateException exn) {
       assertEquals("Only generated 1 distinct file names for 3 files.", exn.getMessage());
@@ -355,9 +354,7 @@ public class FileBasedSinkTest {
     List<ResourceId> expected;
     List<ResourceId> actual;
     ResourceId root = getBaseOutputDirectory();
-    SimpleSink<Void> sink =
-        SimpleSink.makeSimpleSink(
-            root, "file", "-SSSSS-of-NNNNN", "", Compression.UNCOMPRESSED);
+    SimpleSink<Void> sink = SimpleSink.makeSimpleSink(root, "file", "-SSSSS-of-NNNNN", "");
     FilenamePolicy policy = sink.getDynamicDestinations().getFilenamePolicy(null);
 
     expected =
@@ -464,8 +461,7 @@ public class FileBasedSinkTest {
   public void testFileBasedWriterWithWritableByteChannelFactory() throws Exception {
     final String testUid = "testId";
     ResourceId root = getBaseOutputDirectory();
-    SimpleSink<Void> sink = SimpleSink.makeSimpleSink(
-        root, "file", "-SS-of-NN", "txt", new DrunkWritableByteChannelFactory());
+    SimpleSink<Void> sink = SimpleSink.makeSimpleSink(root, "file", "-SS-of-NN", "txt");
     final Writer<String> writer = sink.createWriter(null);
     final ResourceId expectedFile =
         sink.getTempDirectoryProvider().get().resolve(testUid, StandardResolveOptions.RESOLVE_FILE);
@@ -480,7 +476,7 @@ public class FileBasedSinkTest {
     expected.add("footer");
     expected.add("footer");
 
-    writer.open(expectedFile, CompressionType.UNCOMPRESSED);
+    writer.open(expectedFile, new DrunkWritableByteChannelFactory());
     writer.write("a");
     writer.write("b");
     writer.close();
@@ -490,8 +486,6 @@ public class FileBasedSinkTest {
 
   /** Build a SimpleSink with default options. */
   private SimpleSink<Void> buildSink() {
-    return SimpleSink.makeSimpleSink(
-        getBaseOutputDirectory(), "file", "-SS-of-NN", ".test", Compression.UNCOMPRESSED);
+    return SimpleSink.makeSimpleSink(getBaseOutputDirectory(), "file", "-SS-of-NN", ".test");
   }
-
 }

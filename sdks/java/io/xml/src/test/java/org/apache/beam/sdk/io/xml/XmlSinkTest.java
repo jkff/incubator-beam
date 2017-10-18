@@ -187,11 +187,10 @@ public class XmlSinkTest {
   private <T> void writeBundle(XmlWriter<T> writer, List<T> elements, WritableByteChannel channel)
       throws Exception {
     writer.prepareWrite(channel);
-    writer.writeHeader();
     for (T elem : elements) {
       writer.write(elem);
     }
-    writer.writeFooter();
+    writer.finishWrite();
   }
 
   /**

@@ -214,13 +214,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
   private final DynamicDestinations<?, DestinationT, OutputT> dynamicDestinations;
 
   /**
-   * The {@link WritableByteChannelFactory} that is used to wrap the raw data output to the
-   * underlying channel. The default is to not compress the output using {@link
-   * Compression#UNCOMPRESSED}.
-   */
-  private final WritableByteChannelFactory writableByteChannelFactory;
-
-  /**
    * A class that allows value-dependent writes in {@link FileBasedSink}.
    *
    * <p>Users can define a custom type to represent destinations, and provide a mapping to turn this
@@ -375,35 +368,14 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     }
   }
 
-  /**
-   * Construct a {@link FileBasedSink} with the given temp directory, producing uncompressed files.
-   */
+  /** Construct a {@link FileBasedSink} with the given temp directory and output channel type. */
   @Experimental(Kind.FILESYSTEM)
   public FileBasedSink(
       ValueProvider<ResourceId> tempDirectoryProvider,
       DynamicDestinations<?, DestinationT, OutputT> dynamicDestinations) {
-    this(tempDirectoryProvider, dynamicDestinations, Compression.UNCOMPRESSED);
-  }
-
-  /** Construct a {@link FileBasedSink} with the given temp directory and output channel type. */
-  @Experimental(Kind.FILESYSTEM)
-  public FileBasedSink(
-      ValueProvider<ResourceId> tempDirectoryProvider,
-      DynamicDestinations<?, DestinationT, OutputT> dynamicDestinations,
-      WritableByteChannelFactory writableByteChannelFactory) {
     this.tempDirectoryProvider =
         NestedValueProvider.of(tempDirectoryProvider, new ExtractDirectory());
     this.dynamicDestinations = checkNotNull(dynamicDestinations);
-    this.writableByteChannelFactory = writableByteChannelFactory;
-  }
-
-  /** Construct a {@link FileBasedSink} with the given temp directory and output channel type. */
-  @Experimental(Kind.FILESYSTEM)
-  public FileBasedSink(
-      ValueProvider<ResourceId> tempDirectoryProvider,
-      DynamicDestinations<?, DestinationT, OutputT> dynamicDestinations,
-      Compression compression) {
-    this(tempDirectoryProvider, dynamicDestinations, CompressionType.fromCanonical(compression));
   }
 
   /** Return the {@link DynamicDestinations} used. */
@@ -432,11 +404,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
 
   public void populateDisplayData(DisplayData.Builder builder) {
     getDynamicDestinations().populateDisplayData(builder);
-  }
-
-  /** Returns the {@link WritableByteChannelFactory} used. */
-  protected final WritableByteChannelFactory getWritableByteChannelFactory() {
-    return writableByteChannelFactory;
   }
 
   /**

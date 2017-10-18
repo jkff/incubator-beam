@@ -31,32 +31,22 @@ import org.apache.beam.sdk.util.MimeTypes;
 class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, String> {
   public SimpleSink(
       ResourceId tempDirectory,
-      DynamicDestinations<String, DestinationT, String> dynamicDestinations,
-      WritableByteChannelFactory writableByteChannelFactory) {
-    super(StaticValueProvider.of(tempDirectory), dynamicDestinations, writableByteChannelFactory);
-  }
-
-  public SimpleSink(
-      ResourceId tempDirectory,
-      DynamicDestinations<String, DestinationT, String> dynamicDestinations,
-      Compression compression) {
-    super(StaticValueProvider.of(tempDirectory), dynamicDestinations, compression);
+      DynamicDestinations<String, DestinationT, String> dynamicDestinations) {
+    super(StaticValueProvider.of(tempDirectory), dynamicDestinations);
   }
 
   public static SimpleSink<Void> makeSimpleSink(
       ResourceId tempDirectory, FilenamePolicy filenamePolicy) {
     return new SimpleSink<>(
         tempDirectory,
-        DynamicFileDestinations.<String>constant(filenamePolicy),
-        Compression.UNCOMPRESSED);
+        DynamicFileDestinations.<String>constant(filenamePolicy));
   }
 
   public static SimpleSink<Void> makeSimpleSink(
       ResourceId baseDirectory,
       String prefix,
       String shardTemplate,
-      String suffix,
-      WritableByteChannelFactory writableByteChannelFactory) {
+      String suffix) {
     DynamicDestinations<String, Void, String> dynamicDestinations =
         DynamicFileDestinations.constant(
             DefaultFilenamePolicy.fromParams(
@@ -65,21 +55,7 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
                         baseDirectory.resolve(prefix, StandardResolveOptions.RESOLVE_FILE))
                     .withShardTemplate(shardTemplate)
                     .withSuffix(suffix)));
-    return new SimpleSink<>(baseDirectory, dynamicDestinations, writableByteChannelFactory);
-  }
-
-  public static SimpleSink<Void> makeSimpleSink(
-      ResourceId baseDirectory,
-      String prefix,
-      String shardTemplate,
-      String suffix,
-      Compression compression) {
-    return makeSimpleSink(
-        baseDirectory,
-        prefix,
-        shardTemplate,
-        suffix,
-        FileBasedSink.CompressionType.fromCanonical(compression));
+    return new SimpleSink<>(baseDirectory, dynamicDestinations);
   }
 
   @Override

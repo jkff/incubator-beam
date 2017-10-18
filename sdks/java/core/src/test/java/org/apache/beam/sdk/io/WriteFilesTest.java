@@ -350,8 +350,7 @@ public class WriteFilesTest {
                             .resolve("file", StandardResolveOptions.RESOLVE_FILE))
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
-        new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
+        new SimpleSink<Void>(getBaseOutputDirectory(), dynamicDestinations) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
@@ -450,9 +449,7 @@ public class WriteFilesTest {
   private void testDynamicDestinationsHelper(boolean bounded, boolean emptyShards)
       throws IOException {
     TestDestinations dynamicDestinations = new TestDestinations(getBaseOutputDirectory());
-    SimpleSink<Integer> sink =
-        new SimpleSink<>(
-            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED);
+    SimpleSink<Integer> sink = new SimpleSink<>(getBaseOutputDirectory(), dynamicDestinations);
 
     // Flag to validate that the pipeline options are passed to the Sink.
     WriteOptions options = TestPipeline.testingPipelineOptions().as(WriteOptions.class);
@@ -506,8 +503,7 @@ public class WriteFilesTest {
                             .resolve("file", StandardResolveOptions.RESOLVE_FILE))
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
-        new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
+        new SimpleSink<Void>(getBaseOutputDirectory(), dynamicDestinations) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
@@ -531,8 +527,7 @@ public class WriteFilesTest {
                             .resolve("file", StandardResolveOptions.RESOLVE_FILE))
                     .withShardTemplate("-SS-of-NN")));
     SimpleSink<Void> sink =
-        new SimpleSink<Void>(
-            getBaseOutputDirectory(), dynamicDestinations, Compression.UNCOMPRESSED) {
+        new SimpleSink<Void>(getBaseOutputDirectory(), dynamicDestinations) {
           @Override
           public void populateDisplayData(DisplayData.Builder builder) {
             builder.add(DisplayData.item("foo", "bar"));
