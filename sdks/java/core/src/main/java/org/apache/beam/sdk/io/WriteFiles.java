@@ -23,17 +23,24 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions.RESOLVE_FILE;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
+import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.hash.Hashing;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,6 +60,8 @@ import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.io.FileBasedSink.FileResult;
 import org.apache.beam.sdk.io.FileBasedSink.FileResultCoder;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
+import org.apache.beam.sdk.io.fs.MatchResult;
+import org.apache.beam.sdk.io.fs.MoveOptions;
 import org.apache.beam.sdk.io.fs.ResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -97,11 +106,11 @@ import org.slf4j.LoggerFactory;
  * finalization of the write. The output of a write is {@link PDone}.
  *
  * <p>By default, every bundle in the input {@link PCollection} will be processed by a {@link
- * Writer}, so the number of output will vary based on runner behavior, though at least 1
- * output will always be produced. The exact parallelism of the write stage can be controlled using
- * {@link WriteFiles#withNumShards}, typically used to control how many files are produced or to
- * globally limit the number of workers connecting to an external service. However, this option can
- * often hurt performance: it adds an additional {@link GroupByKey} to the pipeline.
+ * Writer}, so the number of output will vary based on runner behavior, though at least 1 output
+ * will always be produced. The exact parallelism of the write stage can be controlled using {@link
+ * WriteFiles#withNumShards}, typically used to control how many files are produced or to globally
+ * limit the number of workers connecting to an external service. However, this option can often
+ * hurt performance: it adds an additional {@link GroupByKey} to the pipeline.
  *
  * <p>Example usage with runner-determined sharding:
  *
@@ -135,8 +144,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   @Nullable private final PTransform<PCollection<UserT>, PCollectionView<Integer>> computeNumShards;
   // We don't use a side input for static sharding, as we want this value to be updatable
   // when a pipeline is updated.
-  @Nullable
-  private final ValueProvider<Integer> numShardsProvider;
+  @Nullable private final ValueProvider<Integer> numShardsProvider;
   private final boolean windowedWrites;
   private int maxNumWritersPerBundle;
   // This is the set of side inputs used by this transform. This is usually populated by the users's
@@ -182,7 +190,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
   @Override
   public WriteFilesResult<DestinationT> expand(PCollection<UserT> input) {
     if (input.isBounded() == IsBounded.UNBOUNDED) {
-      checkArgument(windowedWrites,
+      checkArgument(
+          windowedWrites,
           "Must use windowed writes when applying %s to an unbounded PCollection",
           WriteFiles.class.getSimpleName());
       // The reason for this is https://issues.apache.org/jira/browse/BEAM-1438
@@ -210,8 +219,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     if (getSharding() != null) {
       builder.include("sharding", getSharding());
     } else {
-      builder.addIfNotNull(DisplayData.item("numShards", getNumShards())
-          .withLabel("Fixed Number of Shards"));
+      builder.addIfNotNull(
+          DisplayData.item("numShards", getNumShards()).withLabel("Fixed Number of Shards"));
     }
   }
 
@@ -220,9 +229,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     return sink;
   }
 
-  /**
-   * Returns whether or not to perform windowed writes.
-   */
+  /** Returns whether or not to perform windowed writes. */
   public boolean isWindowedWrites() {
     return windowedWrites;
   }
@@ -429,8 +436,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       if (writer == null) {
         if (writers.size() <= maxNumWritersPerBundle) {
           ResourceId outputFile =
-              tempDirectory.get().resolve(
-                  UUID.randomUUID().toString(), RESOLVE_FILE);
+              tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           LOG.info("Opening writer to {} for {}", key);
           writer = sink.createWriter();
           writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
@@ -481,7 +487,10 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     }
   }
 
-  enum ShardAssignment { ASSIGN_IN_FINALIZE, ASSIGN_WHEN_WRITING }
+  enum ShardAssignment {
+    ASSIGN_IN_FINALIZE,
+    ASSIGN_WHEN_WRITING
+  }
 
   /*
    * Like {@link WriteBundles}, but where the elements for each shard have been collected into a
@@ -519,11 +528,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         Writer<DestinationT, OutputT> writer = writers.get(destination);
         if (writer == null) {
           ResourceId outputFile =
-              tempDirectory
-                  .get()
-                  .resolve(
-                      UUID.randomUUID().toString(),
-                      RESOLVE_FILE);
+              tempDirectory.get().resolve(UUID.randomUUID().toString(), RESOLVE_FILE);
           writer = sink.createWriter();
           writer.open(outputFile, destination, sink.getWritableByteChannelFactory());
           writers.put(destination, writer);
@@ -689,8 +694,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     if (computeNumShards == null && numShardsProvider == null) {
       numShardsView = null;
-      TupleTag<FileResult<DestinationT>> writtenRecordsTag =
-          new TupleTag<>("writtenRecordsTag");
+      TupleTag<FileResult<DestinationT>> writtenRecordsTag = new TupleTag<>("writtenRecordsTag");
       TupleTag<KV<ShardedKey<Integer>, UserT>> unwrittedRecordsTag =
           new TupleTag<>("unwrittenRecordsTag");
       String writeName = windowedWrites ? "WriteWindowedBundles" : "WriteBundles";
@@ -713,7 +717,9 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               .apply("GroupUnwritten", GroupByKey.<ShardedKey<Integer>, UserT>create())
               .apply(
                   "WriteUnwritten",
-                  ParDo.of(new WriteShardedBundles(tempDirectory, ShardAssignment.ASSIGN_IN_FINALIZE))
+                  ParDo.of(
+                          new WriteShardedBundles(
+                              tempDirectory, ShardAssignment.ASSIGN_IN_FINALIZE))
                       .withSideInputs(sideInputs))
               .setCoder(FileResultCoder.of(shardedWindowCoder, destinationCoder));
       results =
@@ -774,7 +780,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           keyedResults
               .apply("FinalizeGroupByKey", GroupByKey.<Void, FileResult<DestinationT>>create())
               .apply(
-                  "FinalizeWindowed", ParDo.of(new FinalizeWindowedFn<DestinationT>(sink, tempDirectory)))
+                  "FinalizeWindowed",
+                  ParDo.of(new FinalizeWindowedFn<DestinationT>(sink, tempDirectory)))
               .setCoder(KvCoder.of(destinationCoder, StringUtf8Coder.of()));
     } else {
       final PCollectionView<Iterable<FileResult<DestinationT>>> resultsView =
@@ -809,9 +816,134 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     TupleTag<KV<DestinationT, String>> perDestinationOutputFilenamesTag =
         new TupleTag<>("perDestinationOutputFilenames");
     return WriteFilesResult.in(
-        input.getPipeline(),
-        perDestinationOutputFilenamesTag,
-        outputFilenames);
+        input.getPipeline(), perDestinationOutputFilenamesTag, outputFilenames);
+  }
+
+  /**
+   * Finalizes writing by copying temporary output files to their final location.
+   *
+   * <p>Finalization may be overridden by subclass implementations to perform customized
+   * finalization (e.g., initiating some operation on output bundles, merging them, etc.). {@code
+   * writerResults} contains the filenames of written bundles.
+   *
+   * <p>If subclasses override this method, they must guarantee that its implementation is
+   * idempotent, as it may be executed multiple times in the case of failure or for redundancy. It
+   * is a best practice to attempt to try to make this method atomic.
+   *
+   * <p>Returns the map of temporary files generated to final filenames. Callers must call {@link
+   * #removeTemporaryFiles} to cleanup the temporary files.
+   *
+   * @param writerResults the results of writes (FileResult).
+   */
+  private static <DestinationT> Map<ResourceId, ResourceId> finalizeResults(
+      FileBasedSink<?, DestinationT, ?> sink,
+      Iterable<FileResult<DestinationT>> writerResults) throws Exception {
+    // Collect names of temporary files and copies them.
+    Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(sink, writerResults);
+    copyToOutputFiles(outputFilenames);
+    return outputFilenames;
+  }
+
+  @Experimental(Experimental.Kind.FILESYSTEM)
+  private static <DestinationT> Map<ResourceId, ResourceId> buildOutputFilenames(
+      FileBasedSink<?, DestinationT, ?> sink,
+      Iterable<FileResult<DestinationT>> writerResults) {
+    int numShards = Iterables.size(writerResults);
+    Map<ResourceId, ResourceId> outputFilenames = Maps.newHashMap();
+
+    // Either all results have a shard number set (if the sink is configured with a fixed
+    // number of shards), or they all don't (otherwise).
+    Boolean isShardNumberSetEverywhere = null;
+    for (FileResult<DestinationT> result : writerResults) {
+      boolean isShardNumberSetHere = (result.getShard() != UNKNOWN_SHARDNUM);
+      if (isShardNumberSetEverywhere == null) {
+        isShardNumberSetEverywhere = isShardNumberSetHere;
+      } else {
+        checkArgument(
+            isShardNumberSetEverywhere == isShardNumberSetHere,
+            "Found a mix of files with and without shard number set: %s",
+            result);
+      }
+    }
+
+    if (isShardNumberSetEverywhere == null) {
+      isShardNumberSetEverywhere = true;
+    }
+
+    List<FileResult<DestinationT>> resultsWithShardNumbers = Lists.newArrayList();
+    if (isShardNumberSetEverywhere) {
+      resultsWithShardNumbers = Lists.newArrayList(writerResults);
+    } else {
+      // Sort files for idempotence. Sort by temporary filename.
+      // Note that this codepath should not be used when processing triggered windows. In the
+      // case of triggers, the list of FileResult objects in the Finalize iterable is not
+      // deterministic, and might change over retries. This breaks the assumption below that
+      // sorting the FileResult objects provides idempotency.
+      List<FileResult<DestinationT>> sortedByTempFilename =
+          Ordering.from(
+                  new Comparator<FileResult<DestinationT>>() {
+                    @Override
+                    public int compare(
+                        FileResult<DestinationT> first, FileResult<DestinationT> second) {
+                      String firstFilename = first.getTempFilename().toString();
+                      String secondFilename = second.getTempFilename().toString();
+                      return firstFilename.compareTo(secondFilename);
+                    }
+                  })
+              .sortedCopy(writerResults);
+      for (int i = 0; i < sortedByTempFilename.size(); i++) {
+        resultsWithShardNumbers.add(sortedByTempFilename.get(i).withShard(i));
+      }
+    }
+
+    for (FileResult<DestinationT> result : resultsWithShardNumbers) {
+      checkArgument(
+          result.getShard() != UNKNOWN_SHARDNUM, "Should have set shard number on %s", result);
+      outputFilenames.put(
+          result.getTempFilename(),
+          result.getDestinationFile(
+              sink.getDynamicDestinations(), numShards, sink.getWritableByteChannelFactory()));
+    }
+
+    int numDistinctShards = new HashSet<>(outputFilenames.values()).size();
+    checkState(
+        numDistinctShards == outputFilenames.size(),
+        "Only generated %s distinct file names for %s files.",
+        numDistinctShards,
+        outputFilenames.size());
+    return outputFilenames;
+  }
+
+  /**
+   * Copy temporary files to final output filenames using the file naming template.
+   *
+   * <p>Files will be named according to the {@link FileBasedSink.FilenamePolicy}. The order of the
+   * output files will be the same as the sorted order of the input filenames. In other words (when
+   * using {@link DefaultFilenamePolicy}), if the input filenames are ["C", "A", "B"], baseFilename
+   * (int the policy) is "dir/file", the extension is ".txt", and the fileNamingTemplate is
+   * "-SSS-of-NNN", the contents of A will be copied to dir/file-000-of-003.txt, the contents of B
+   * will be copied to dir/file-001-of-003.txt, etc.
+   *
+   * @param filenames the filenames of temporary files.
+   */
+  @VisibleForTesting
+  @Experimental(Experimental.Kind.FILESYSTEM)
+  private static void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
+    int numFiles = filenames.size();
+    if (numFiles > 0) {
+      LOG.debug("Copying {} files.", numFiles);
+      List<ResourceId> srcFiles = new ArrayList<>(filenames.size());
+      List<ResourceId> dstFiles = new ArrayList<>(filenames.size());
+      for (Map.Entry<ResourceId, ResourceId> srcDestPair : filenames.entrySet()) {
+        srcFiles.add(srcDestPair.getKey());
+        dstFiles.add(srcDestPair.getValue());
+      }
+      // During a failure case, files may have been deleted in an earlier step. Thus
+      // we ignore missing files here.
+      FileSystems.copy(srcFiles, dstFiles, MoveOptions.StandardMoveOptions.IGNORE_MISSING_FILES);
+    } else {
+      LOG.info("No output files to write.");
+    }
   }
 
   private static class FinalizeUnwindowedFn<DestinationT>
@@ -837,8 +969,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
 
     @ProcessElement
     public void processElement(ProcessContext c) throws Exception {
-      sink.getDynamicDestinations()
-          .setSideInputAccessorFromProcessContext(c);
+      sink.getDynamicDestinations().setSideInputAccessorFromProcessContext(c);
       // We must always output at least 1 shard, and honor user-specified
       // numShards if set.
       int minShardsNeeded;
@@ -852,8 +983,8 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       Set<ResourceId> tempFiles = Sets.newHashSet();
       Multimap<DestinationT, FileResult<DestinationT>> perDestination =
           perDestinationResults(c.sideInput(resultsView));
-      for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>>
-          entry : perDestination.asMap().entrySet()) {
+      for (Map.Entry<DestinationT, Collection<FileResult<DestinationT>>> entry :
+          perDestination.asMap().entrySet()) {
         Map<ResourceId, ResourceId> finalizeMap = Maps.newHashMap();
         finalizeMap.putAll(
             finalizeForDestinationFillEmptyShards(
@@ -876,7 +1007,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           c.output(KV.of(destination, outputFile.toString()));
         }
       }
-      FileBasedSink.removeTemporaryFiles(tempDirectory.get(), tempFiles, true);
+      removeTemporaryFiles(tempDirectory.get(), tempFiles, true);
     }
 
     /**
@@ -887,10 +1018,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
     private Map<ResourceId, ResourceId> finalizeForDestinationFillEmptyShards(
         DestinationT destination, Collection<FileResult<DestinationT>> results, int minShardsNeeded)
         throws Exception {
-      LOG.info(
-          "Finalizing write for destination {} num shards {}.",
-          destination,
-          results.size());
+      LOG.info("Finalizing write for destination {} num shards {}.", destination, results.size());
       int extraShardsNeeded = minShardsNeeded - results.size();
       if (extraShardsNeeded > 0) {
         LOG.info(
@@ -910,13 +1038,12 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         }
         LOG.debug("Done creating extra shards for {}.", destination);
       }
-      return sink.finalize(results);
+      return finalizeResults(sink, results);
     }
   }
 
-  private static class FinalizeWindowedFn<DestinationT> extends DoFn<
-                            KV<Void, Iterable<FileResult<DestinationT>>>,
-                            KV<DestinationT, String>> {
+  private static class FinalizeWindowedFn<DestinationT>
+      extends DoFn<KV<Void, Iterable<FileResult<DestinationT>>>, KV<DestinationT, String>> {
     private final FileBasedSink<?, DestinationT, ?> sink;
     private final ValueProvider<ResourceId> tempDirectory;
 
@@ -937,23 +1064,86 @@ public class WriteFiles<UserT, DestinationT, OutputT>
             "Finalizing write for destination {} num shards: {}.",
             entry.getKey(),
             entry.getValue().size());
-        Map<ResourceId, ResourceId> finalizeMap = sink.finalize(entry.getValue());
+        Map<ResourceId, ResourceId> finalizeMap = finalizeResults(sink, entry.getValue());
         tempFiles.addAll(finalizeMap.keySet());
         for (ResourceId outputFile : finalizeMap.values()) {
           c.output(KV.of(entry.getKey(), outputFile.toString()));
         }
       }
-      FileBasedSink.removeTemporaryFiles(tempDirectory.get(), tempFiles, false);
+      removeTemporaryFiles(tempDirectory.get(), tempFiles, false);
     }
   }
 
   private static <DestinationT>
-  Multimap<DestinationT, FileResult<DestinationT>> perDestinationResults(
-      Iterable<FileResult<DestinationT>> results) {
+      Multimap<DestinationT, FileResult<DestinationT>> perDestinationResults(
+          Iterable<FileResult<DestinationT>> results) {
     Multimap<DestinationT, FileResult<DestinationT>> perDestination = ArrayListMultimap.create();
     for (FileResult<DestinationT> result : results) {
       perDestination.put(result.getDestination(), result);
     }
     return perDestination;
+  }
+
+  /*
+   * Remove temporary files after finalization.
+   *
+   * <p>In the case where we are doing global-window, untriggered writes, we remove the entire
+   * temporary directory, rather than specifically removing the files from writerResults, because
+   * writerResults includes only successfully completed bundles, and we'd like to clean up the
+   * failed ones too. The reason we remove files here rather than in finalize is that finalize
+   * might be called multiple times (e.g. if the bundle contained multiple destinations), and
+   * deleting the entire directory can't be done until all calls to finalize.
+   *
+   * <p>When windows or triggers are specified, files are generated incrementally so deleting the
+   * entire directory in finalize is incorrect. If windowedWrites is true, we instead delete the
+   * files individually. This means that some temporary files generated by failed bundles might
+   * not be cleaned up. Note that {@link WriteFiles} does attempt clean up files if exceptions
+   * are thrown, however there are still some scenarios where temporary files might be left.
+   */
+  @Experimental(Experimental.Kind.FILESYSTEM)
+  private static void removeTemporaryFiles(
+      ResourceId tempDir, Set<ResourceId> knownFiles, boolean shouldRemoveTemporaryDirectory)
+      throws IOException {
+    LOG.debug("Removing temporary bundle output files in {}.", tempDir);
+
+    // To partially mitigate the effects of filesystems with eventually-consistent
+    // directory matching APIs, we remove not only files that the filesystem says exist
+    // in the directory (which may be incomplete), but also files that are known to exist
+    // (produced by successfully completed bundles).
+
+    // This may still fail to remove temporary outputs of some failed bundles, but at least
+    // the common case (where all bundles succeed) is guaranteed to be fully addressed.
+    Set<ResourceId> matches = new HashSet<>();
+    // TODO: Windows OS cannot resolves and matches '*' in the path,
+    // ignore the exception for now to avoid failing the pipeline.
+    if (shouldRemoveTemporaryDirectory) {
+      try {
+        MatchResult singleMatch =
+            Iterables.getOnlyElement(
+                FileSystems.match(Collections.singletonList(tempDir.toString() + "*")));
+        for (MatchResult.Metadata matchResult : singleMatch.metadata()) {
+          matches.add(matchResult.resourceId());
+        }
+      } catch (Exception e) {
+        LOG.warn("Failed to match temporary files under: [{}].", tempDir);
+      }
+    }
+    Set<ResourceId> allMatches = new HashSet<>(matches);
+    allMatches.addAll(knownFiles);
+    LOG.debug(
+        "Removing {} temporary files found under {} ({} matched glob, {} known files)",
+        allMatches.size(),
+        tempDir,
+        matches.size(),
+        allMatches.size() - matches.size());
+    FileSystems.delete(allMatches, MoveOptions.StandardMoveOptions.IGNORE_MISSING_FILES);
+
+    // Deletion of the temporary directory might fail, if not all temporary files are removed.
+    try {
+      FileSystems.delete(
+          Collections.singletonList(tempDir), MoveOptions.StandardMoveOptions.IGNORE_MISSING_FILES);
+    } catch (Exception e) {
+      LOG.warn("Failed to remove temporary directory: [{}].", tempDir);
+    }
   }
 }

@@ -21,31 +21,19 @@ import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Verify.verifyNotNull;
 import static org.apache.beam.sdk.io.WriteFiles.UNKNOWN_SHARDNUM;
 import static org.apache.beam.sdk.values.TypeDescriptors.extractFromTypeParameters;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Ordering;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.channels.WritableByteChannel;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
@@ -57,15 +45,11 @@ import org.apache.beam.sdk.coders.NullableCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.StructuredCoder;
 import org.apache.beam.sdk.coders.VarIntCoder;
-import org.apache.beam.sdk.io.fs.MatchResult;
-import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
 import org.apache.beam.sdk.io.fs.MoveOptions.StandardMoveOptions;
-import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
-import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
@@ -77,9 +61,6 @@ import org.apache.beam.sdk.util.MimeTypes;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.TypeDescriptors.TypeVariableExtractor;
-import org.joda.time.Instant;
-import org.joda.time.format.DateTimeFormat;
-import org.joda.time.format.DateTimeFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -466,199 +447,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
   /** Returns the {@link WritableByteChannelFactory} used. */
   protected final WritableByteChannelFactory getWritableByteChannelFactory() {
     return writableByteChannelFactory;
-  }
-
-  /**
-   * Finalizes writing by copying temporary output files to their final location.
-   *
-   * <p>Finalization may be overridden by subclass implementations to perform customized
-   * finalization (e.g., initiating some operation on output bundles, merging them, etc.). {@code
-   * writerResults} contains the filenames of written bundles.
-   *
-   * <p>If subclasses override this method, they must guarantee that its implementation is
-   * idempotent, as it may be executed multiple times in the case of failure or for redundancy. It
-   * is a best practice to attempt to try to make this method atomic.
-   *
-   * <p>Returns the map of temporary files generated to final filenames. Callers must call {@link
-   * #removeTemporaryFiles} to cleanup the temporary files.
-   *
-   * @param writerResults the results of writes (FileResult).
-   */
-  Map<ResourceId, ResourceId> finalize(
-      Iterable<FileResult<DestinationT>> writerResults) throws Exception {
-    // Collect names of temporary files and copies them.
-    Map<ResourceId, ResourceId> outputFilenames = buildOutputFilenames(writerResults);
-    copyToOutputFiles(outputFilenames);
-    return outputFilenames;
-  }
-
-  @Experimental(Kind.FILESYSTEM)
-  Map<ResourceId, ResourceId> buildOutputFilenames(
-      Iterable<FileResult<DestinationT>> writerResults) {
-    int numShards = Iterables.size(writerResults);
-    Map<ResourceId, ResourceId> outputFilenames = Maps.newHashMap();
-
-    // Either all results have a shard number set (if the sink is configured with a fixed
-    // number of shards), or they all don't (otherwise).
-    Boolean isShardNumberSetEverywhere = null;
-    for (FileResult<DestinationT> result : writerResults) {
-      boolean isShardNumberSetHere = (result.getShard() != UNKNOWN_SHARDNUM);
-      if (isShardNumberSetEverywhere == null) {
-        isShardNumberSetEverywhere = isShardNumberSetHere;
-      } else {
-        checkArgument(
-            isShardNumberSetEverywhere == isShardNumberSetHere,
-            "Found a mix of files with and without shard number set: %s",
-            result);
-      }
-    }
-
-    if (isShardNumberSetEverywhere == null) {
-      isShardNumberSetEverywhere = true;
-    }
-
-    List<FileResult<DestinationT>> resultsWithShardNumbers = Lists.newArrayList();
-    if (isShardNumberSetEverywhere) {
-      resultsWithShardNumbers = Lists.newArrayList(writerResults);
-    } else {
-      // Sort files for idempotence. Sort by temporary filename.
-      // Note that this codepath should not be used when processing triggered windows. In the
-      // case of triggers, the list of FileResult objects in the Finalize iterable is not
-      // deterministic, and might change over retries. This breaks the assumption below that
-      // sorting the FileResult objects provides idempotency.
-      List<FileResult<DestinationT>> sortedByTempFilename =
-          Ordering.from(
-              new Comparator<FileResult<DestinationT>>() {
-                @Override
-                public int compare(
-                    FileResult<DestinationT> first, FileResult<DestinationT> second) {
-                  String firstFilename = first.getTempFilename().toString();
-                  String secondFilename = second.getTempFilename().toString();
-                  return firstFilename.compareTo(secondFilename);
-                }
-              })
-              .sortedCopy(writerResults);
-      for (int i = 0; i < sortedByTempFilename.size(); i++) {
-        resultsWithShardNumbers.add(sortedByTempFilename.get(i).withShard(i));
-      }
-    }
-
-    for (FileResult<DestinationT> result : resultsWithShardNumbers) {
-      checkArgument(
-          result.getShard() != UNKNOWN_SHARDNUM, "Should have set shard number on %s", result);
-      outputFilenames.put(
-          result.getTempFilename(),
-          result.getDestinationFile(
-              getDynamicDestinations(),
-              numShards,
-              getWritableByteChannelFactory()));
-    }
-
-    int numDistinctShards = new HashSet<>(outputFilenames.values()).size();
-    checkState(
-        numDistinctShards == outputFilenames.size(),
-        "Only generated %s distinct file names for %s files.",
-        numDistinctShards,
-        outputFilenames.size());
-    return outputFilenames;
-  }
-
-  /**
-   * Copy temporary files to final output filenames using the file naming template.
-   *
-   * <p>Can be called from subclasses that override {@link WriteOperation#finalize}.
-   *
-   * <p>Files will be named according to the {@link FilenamePolicy}. The order of the output files
-   * will be the same as the sorted order of the input filenames. In other words (when using
-   * {@link DefaultFilenamePolicy}), if the input filenames are ["C", "A", "B"], baseFilename (int
-   * the policy) is "dir/file", the extension is ".txt", and the fileNamingTemplate is
-   * "-SSS-of-NNN", the contents of A will be copied to dir/file-000-of-003.txt, the contents of B
-   * will be copied to dir/file-001-of-003.txt, etc.
-   *
-   * @param filenames the filenames of temporary files.
-   */
-  @VisibleForTesting
-  @Experimental(Kind.FILESYSTEM)
-  static void copyToOutputFiles(Map<ResourceId, ResourceId> filenames) throws IOException {
-    int numFiles = filenames.size();
-    if (numFiles > 0) {
-      LOG.debug("Copying {} files.", numFiles);
-      List<ResourceId> srcFiles = new ArrayList<>(filenames.size());
-      List<ResourceId> dstFiles = new ArrayList<>(filenames.size());
-      for (Map.Entry<ResourceId, ResourceId> srcDestPair : filenames.entrySet()) {
-        srcFiles.add(srcDestPair.getKey());
-        dstFiles.add(srcDestPair.getValue());
-      }
-      // During a failure case, files may have been deleted in an earlier step. Thus
-      // we ignore missing files here.
-      FileSystems.copy(srcFiles, dstFiles, StandardMoveOptions.IGNORE_MISSING_FILES);
-    } else {
-      LOG.info("No output files to write.");
-    }
-  }
-
-  /*
-   * Remove temporary files after finalization.
-   *
-   * <p>In the case where we are doing global-window, untriggered writes, we remove the entire
-   * temporary directory, rather than specifically removing the files from writerResults, because
-   * writerResults includes only successfully completed bundles, and we'd like to clean up the
-   * failed ones too. The reason we remove files here rather than in finalize is that finalize
-   * might be called multiple times (e.g. if the bundle contained multiple destinations), and
-   * deleting the entire directory can't be done until all calls to finalize.
-   *
-   * <p>When windows or triggers are specified, files are generated incrementally so deleting the
-   * entire directory in finalize is incorrect. If windowedWrites is true, we instead delete the
-   * files individually. This means that some temporary files generated by failed bundles might
-   * not be cleaned up. Note that {@link WriteFiles} does attempt clean up files if exceptions
-   * are thrown, however there are still some scenarios where temporary files might be left.
-   */
-  @VisibleForTesting
-  @Experimental(Kind.FILESYSTEM)
-  static void removeTemporaryFiles(
-      ResourceId tempDir, Set<ResourceId> knownFiles, boolean shouldRemoveTemporaryDirectory)
-      throws IOException {
-    LOG.debug("Removing temporary bundle output files in {}.", tempDir);
-
-    // To partially mitigate the effects of filesystems with eventually-consistent
-    // directory matching APIs, we remove not only files that the filesystem says exist
-    // in the directory (which may be incomplete), but also files that are known to exist
-    // (produced by successfully completed bundles).
-
-    // This may still fail to remove temporary outputs of some failed bundles, but at least
-    // the common case (where all bundles succeed) is guaranteed to be fully addressed.
-    Set<ResourceId> matches = new HashSet<>();
-    // TODO: Windows OS cannot resolves and matches '*' in the path,
-    // ignore the exception for now to avoid failing the pipeline.
-    if (shouldRemoveTemporaryDirectory) {
-      try {
-        MatchResult singleMatch =
-            Iterables.getOnlyElement(
-                FileSystems.match(Collections.singletonList(tempDir.toString() + "*")));
-        for (Metadata matchResult : singleMatch.metadata()) {
-          matches.add(matchResult.resourceId());
-        }
-      } catch (Exception e) {
-        LOG.warn("Failed to match temporary files under: [{}].", tempDir);
-      }
-    }
-    Set<ResourceId> allMatches = new HashSet<>(matches);
-    allMatches.addAll(knownFiles);
-    LOG.debug(
-        "Removing {} temporary files found under {} ({} matched glob, {} known files)",
-        allMatches.size(),
-        tempDir,
-        matches.size(),
-        allMatches.size() - matches.size());
-    FileSystems.delete(allMatches, StandardMoveOptions.IGNORE_MISSING_FILES);
-
-    // Deletion of the temporary directory might fail, if not all temporary files are removed.
-    try {
-      FileSystems.delete(
-          Collections.singletonList(tempDir), StandardMoveOptions.IGNORE_MISSING_FILES);
-    } catch (Exception e) {
-      LOG.warn("Failed to remove temporary directory: [{}].", tempDir);
-    }
   }
 
   /**
