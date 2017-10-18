@@ -110,7 +110,7 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
     private WritableByteChannel channel;
 
     public SimpleWriter(SimpleWriteOperation<DestinationT> writeOperation) {
-      super(writeOperation);
+      super();
     }
 
     @Override

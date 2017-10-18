@@ -84,7 +84,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
       marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
       marshaller.setProperty(Marshaller.JAXB_FRAGMENT, Boolean.TRUE);
       marshaller.setProperty(Marshaller.JAXB_ENCODING, getSink().spec.getCharset());
-      return new XmlWriter<>(this, marshaller);
+      return new XmlWriter<>(this, getSink().spec.getRootElement(), marshaller);
     }
 
     /**
@@ -104,10 +104,12 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
   /** A {@link Writer} that can write objects as XML elements. */
   protected static final class XmlWriter<T> extends Writer<Void, T> {
     final Marshaller marshaller;
+    private final String rootElement;
     private OutputStream os = null;
 
-    public XmlWriter(XmlWriteOperation<T> writeOperation, Marshaller marshaller) {
-      super(writeOperation);
+    public XmlWriter(XmlWriteOperation<T> writeOperation, String rootElement, Marshaller marshaller) {
+      super();
+      this.rootElement = rootElement;
       this.marshaller = marshaller;
     }
 
@@ -129,8 +131,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
      */
     @Override
     protected void writeHeader() throws Exception {
-      String rootElementName = getWriteOperation().getSink().spec.getRootElement();
-      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "<" + rootElementName + ">\n"));
+      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "<" + rootElement + ">\n"));
     }
 
     /**
@@ -138,8 +139,7 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
      */
     @Override
     protected void writeFooter() throws Exception {
-      String rootElementName = getWriteOperation().getSink().spec.getRootElement();
-      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "\n</" + rootElementName + ">"));
+      os.write(CoderUtils.encodeToByteArray(StringUtf8Coder.of(), "\n</" + rootElement + ">"));
     }
 
     /**
@@ -148,14 +148,6 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
     @Override
     public void write(T value) throws Exception {
       marshaller.marshal(value, os);
-    }
-
-    /**
-     * Return the XmlWriteOperation this write belongs to.
-     */
-    @Override
-    public XmlWriteOperation<T> getWriteOperation() {
-      return (XmlWriteOperation<T>) super.getWriteOperation();
     }
   }
 }

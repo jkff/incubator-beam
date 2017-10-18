@@ -429,7 +429,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               paneInfo,
               destination);
           writer = writeOperation.createWriter();
-          writer.open(outputFile, destination);
+          writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
           writers.put(key, writer);
           LOG.debug("Done opening writer");
         } else {
@@ -516,7 +516,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
               writeOperation.tempDirectory.get().resolve(
                   UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
           writer = writeOperation.createWriter();
-          writer.open(outputFile, destination);
+          writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
           writers.put(destination, writer);
         }
         writeOrClose(writer, getSink().getDynamicDestinations().formatRecord(input));
@@ -929,7 +929,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
             writeOperation.tempDirectory.get().resolve(
                 UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
         Writer<DestinationT, OutputT> writer = writeOperation.createWriter();
-        writer.open(outputFile, destination);
+        writer.open(outputFile, destination, writeOperation.sink.getWritableByteChannelFactory());
         writer.close();
         results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
       }

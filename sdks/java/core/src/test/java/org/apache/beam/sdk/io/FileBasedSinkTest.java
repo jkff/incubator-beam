@@ -99,7 +99,7 @@ public class FileBasedSinkTest {
 
     SimpleSink.SimpleWriter<Void> writer =
         buildWriteOperationWithTempDir(getBaseTempDirectory()).createWriter();
-    writer.open(expectedTempFile, null);
+    writer.open(expectedTempFile, null, CompressionType.UNCOMPRESSED);
     for (String value : values) {
       writer.write(value);
     }
@@ -495,7 +495,7 @@ public class FileBasedSinkTest {
     expected.add("footer");
     expected.add("footer");
 
-    writer.open(expectedFile, null);
+    writer.open(expectedFile, null, CompressionType.UNCOMPRESSED);
     writer.write("a");
     writer.write("b");
     writer.close();

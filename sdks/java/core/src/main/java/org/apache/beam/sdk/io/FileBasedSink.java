@@ -794,18 +794,10 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
   public abstract static class Writer<DestinationT, OutputT> {
     private static final Logger LOG = LoggerFactory.getLogger(Writer.class);
 
-    private final WriteOperation<DestinationT, OutputT> writeOperation;
-
     /** The output file for this bundle. May be null if opening failed. */
     private @Nullable ResourceId outputFile;
     private DestinationT destination;
     private WritableByteChannel channel;
-
-    /** Construct a new {@link Writer} that will produce files of the given MIME type. */
-    public Writer(WriteOperation<DestinationT, OutputT> writeOperation) {
-      checkNotNull(writeOperation);
-      this.writeOperation = writeOperation;
-    }
 
     /**
      * Called with the channel that a subclass will write its header, footer, and values to.
@@ -841,13 +833,13 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     protected void finishWrite() throws Exception {}
 
     /** Initializes writing to the given file. */
-    public final void open(ResourceId outputFile, DestinationT destination) throws Exception {
+    public final void open(
+        ResourceId outputFile, DestinationT destination,
+        WritableByteChannelFactory factory) throws Exception {
       LOG.debug("Opening writer for destination {} to file {}", destination, outputFile);
       this.destination = destination;
       this.outputFile = outputFile;
 
-      final WritableByteChannelFactory factory =
-          getWriteOperation().getSink().writableByteChannelFactory;
       // The factory may force a MIME type or it may return null, indicating to use the sink's MIME.
       String channelMimeType = firstNonNull(factory.getMimeType(), getDefaultMimeType());
       WritableByteChannel tempChannel = FileSystems.create(outputFile, channelMimeType);
@@ -914,11 +906,6 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
       } catch (Exception e) {
         throw new IOException(String.format("Failed closing channel to %s", outputFile), e);
       }
-    }
-
-    /** Return the WriteOperation that this Writer belongs to. */
-    public WriteOperation<DestinationT, OutputT> getWriteOperation() {
-      return writeOperation;
     }
 
     /** Return the user destination object for this writer. */

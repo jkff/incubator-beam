@@ -540,7 +540,7 @@ public class TFRecordIO {
       private TFRecordCodec codec;
 
       private TFRecordWriter(WriteOperation<Void, byte[]> writeOperation) {
-        super(writeOperation);
+        super();
       }
 
       @Override
