@@ -101,8 +101,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>In order to ensure fault-tolerance, a bundle may be executed multiple times (e.g., in the
  * event of failure/retry or for redundancy). However, exactly one of these executions will have its
- * result passed to the finalize method. Each call to {@link Writer#open} or {@link
- * Writer#openUnwindowed} is passed a unique <i>bundle id</i> when it is called by the WriteFiles
+ * result passed to the finalize method. Each call to {@link Writer#open} is passed a unique
+ * <i>bundle id</i> when it is called by the WriteFiles
  * transform, so even redundant or retried bundles will have a unique way of identifying their
  * output.
  *
@@ -796,32 +796,15 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
 
     private final WriteOperation<DestinationT, OutputT> writeOperation;
 
-    /** Unique id for this output bundle. */
-    private String id;
-
-    private DestinationT destination;
-
     /** The output file for this bundle. May be null if opening failed. */
     private @Nullable ResourceId outputFile;
-
-    /** The channel to write to. */
+    private DestinationT destination;
     private WritableByteChannel channel;
 
-    /**
-     * The MIME type used in the creation of the output channel (if the file system supports it).
-     *
-     * <p>This is the default for the sink, but it may be overridden by a supplied {@link
-     * WritableByteChannelFactory}. For example, {@link TextIO.Write} uses {@link MimeTypes#TEXT} by
-     * default but if {@link Compression#BZIP2} is set then the MIME type will be overridden to
-     * {@link MimeTypes#BINARY}.
-     */
-    private final String mimeType;
-
     /** Construct a new {@link Writer} that will produce files of the given MIME type. */
-    public Writer(WriteOperation<DestinationT, OutputT> writeOperation, String mimeType) {
+    public Writer(WriteOperation<DestinationT, OutputT> writeOperation) {
       checkNotNull(writeOperation);
       this.writeOperation = writeOperation;
-      this.mimeType = mimeType;
     }
 
     /**
@@ -832,6 +815,16 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
      * <p>Called before any subsequent calls to writeHeader, writeFooter, and write.
      */
     protected abstract void prepareWrite(WritableByteChannel channel) throws Exception;
+
+    /**
+     * The MIME type used in the creation of the output channel (if the file system supports it).
+     *
+     * <p>This is the default for the sink, but it may be overridden by a supplied {@link
+     * WritableByteChannelFactory}. For example, {@link TextIO.Write} uses {@link MimeTypes#TEXT} by
+     * default but if {@link Compression#BZIP2} is set then the MIME type will be overridden to
+     * {@link MimeTypes#BINARY}.
+     */
+    protected abstract String getDefaultMimeType();
 
     /**
      * Writes header at the beginning of output files. Nothing by default; subclasses may override.
@@ -847,57 +840,33 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
      */
     protected void finishWrite() throws Exception {}
 
-    /**
-     * Performs bundle initialization. For example, creates a temporary file for writing or
-     * initializes any state that will be used across calls to {@link Writer#write}.
-     *
-     * <p>The unique id that is given to open should be used to ensure that the writer's output does
-     * not interfere with the output of other Writers, as a bundle may be executed many times for
-     * fault tolerance.
-     *
-     * <p>The window and paneInfo arguments are populated when windowed writes are requested. shard
-     * id populated for the case of static sharding. In cases where the runner is dynamically
-     * picking sharding, shard might be set to -1.
-     */
-    public final void open(
-        String uId, DestinationT destination)
-        throws Exception {
-      this.id = uId;
+    /** Initializes writing to the given file. */
+    public final void open(ResourceId outputFile, DestinationT destination) throws Exception {
+      LOG.debug("Opening writer for destination {} to file {}", destination, outputFile);
       this.destination = destination;
-      ResourceId tempDirectory = getWriteOperation().tempDirectory.get();
-      outputFile = tempDirectory.resolve(id, StandardResolveOptions.RESOLVE_FILE);
-      verifyNotNull(
-          outputFile, "FileSystems are not allowed to return null from resolve: %s", tempDirectory);
+      this.outputFile = outputFile;
 
       final WritableByteChannelFactory factory =
           getWriteOperation().getSink().writableByteChannelFactory;
       // The factory may force a MIME type or it may return null, indicating to use the sink's MIME.
-      String channelMimeType = firstNonNull(factory.getMimeType(), mimeType);
-      LOG.debug("Opening {} for write with MIME type {}.", outputFile, channelMimeType);
+      String channelMimeType = firstNonNull(factory.getMimeType(), getDefaultMimeType());
       WritableByteChannel tempChannel = FileSystems.create(outputFile, channelMimeType);
       try {
         channel = factory.create(tempChannel);
       } catch (Exception e) {
         // If we have opened the underlying channel but fail to open the compression channel,
         // we should still close the underlying channel.
-        closeChannelAndThrow(tempChannel, outputFile, e);
+        closeChannelAndThrow(tempChannel, e);
       }
 
       // The caller shouldn't have to close() this Writer if it fails to open(), so close
       // the channel if prepareWrite() or writeHeader() fails.
-      String step = "";
       try {
-        LOG.debug("Preparing write to {}.", outputFile);
         prepareWrite(channel);
-
-        LOG.debug("Writing header to {}.", outputFile);
         writeHeader();
       } catch (Exception e) {
-        LOG.error("Beginning write to {} failed, closing channel.", step, outputFile, e);
-        closeChannelAndThrow(channel, outputFile, e);
+        closeChannelAndThrow(channel, e);
       }
-
-      LOG.debug("Starting write of bundle {} to {}.", this.id, outputFile);
     }
 
     /** Called for each value in the bundle. */
@@ -909,18 +878,18 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
 
     // Helper function to close a channel, on exception cases.
     // Always throws prior exception, with any new closing exception suppressed.
-    private static void closeChannelAndThrow(
-        WritableByteChannel channel, ResourceId filename, Exception prior) throws Exception {
+    private void closeChannelAndThrow(WritableByteChannel channel, Exception prior)
+        throws Exception {
       try {
         channel.close();
       } catch (Exception e) {
-        LOG.error("Closing channel for {} failed.", filename, e);
+        LOG.error("Closing channel for {} failed.", outputFile, e);
         prior.addSuppressed(e);
         throw prior;
       }
     }
 
-    public final void cleanup() throws Exception {
+    public final void deleteOutputFile() throws Exception {
       if (outputFile != null) {
         // outputFile may be null if open() was not called or failed.
         FileSystems.delete(
@@ -931,13 +900,7 @@ public abstract class FileBasedSink<UserT, DestinationT, OutputT>
     /** Closes the channel and returns the bundle result. */
     public final void close() throws Exception {
       checkState(outputFile != null, "FileResult.close cannot be called with a null outputFile");
-      LOG.debug("Closing {}", outputFile);
-
-      try {
-        writeFooter();
-      } catch (Exception e) {
-        closeChannelAndThrow(channel, outputFile, e);
-      }
+      LOG.info("Closing {}", outputFile);
 
       try {
         finishWrite();

@@ -109,8 +109,13 @@ class SimpleSink<DestinationT> extends FileBasedSink<String, DestinationT, Strin
 
     private WritableByteChannel channel;
 
-    public SimpleWriter(SimpleWriteOperation writeOperation) {
-      super(writeOperation, MimeTypes.TEXT);
+    public SimpleWriter(SimpleWriteOperation<DestinationT> writeOperation) {
+      super(writeOperation);
+    }
+
+    @Override
+    protected String getDefaultMimeType() {
+      return MimeTypes.TEXT;
     }
 
     private static ByteBuffer wrap(String value) throws Exception {

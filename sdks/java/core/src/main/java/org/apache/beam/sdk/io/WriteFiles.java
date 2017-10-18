@@ -52,6 +52,7 @@ import org.apache.beam.sdk.io.FileBasedSink.FileResult;
 import org.apache.beam.sdk.io.FileBasedSink.FileResultCoder;
 import org.apache.beam.sdk.io.FileBasedSink.WriteOperation;
 import org.apache.beam.sdk.io.FileBasedSink.Writer;
+import org.apache.beam.sdk.io.fs.ResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -417,16 +418,18 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       Writer<DestinationT, OutputT> writer = writers.get(key);
       if (writer == null) {
         if (writers.size() <= maxNumWritersPerBundle) {
-          String uuid = UUID.randomUUID().toString();
+          ResourceId outputFile =
+              writeOperation.tempDirectory.get().resolve(
+                  UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
           LOG.info(
-              "Opening writer {} for write operation {}, window {} pane {} destination {}",
-              uuid,
+              "Opening writer to {} for write operation {}, window {} pane {} destination {}",
+              outputFile,
               writeOperation,
               window,
               paneInfo,
               destination);
           writer = writeOperation.createWriter();
-          writer.open(uuid, destination);
+          writer.open(outputFile, destination);
           writers.put(key, writer);
           LOG.debug("Done opening writer");
         } else {
@@ -457,7 +460,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           writer.close();
         } catch (Exception e) {
           // If anything goes wrong, make sure to delete the temporary file.
-          writer.cleanup();
+          writer.deleteOutputFile();
           throw e;
         }
         BoundedWindow window = key.window;
@@ -509,8 +512,11 @@ public class WriteFiles<UserT, DestinationT, OutputT>
         Writer<DestinationT, OutputT> writer = writers.get(destination);
         if (writer == null) {
           LOG.debug("Opening writer for write operation {}", writeOperation);
+          ResourceId outputFile =
+              writeOperation.tempDirectory.get().resolve(
+                  UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
           writer = writeOperation.createWriter();
-          writer.open(UUID.randomUUID().toString(), destination);
+          writer.open(outputFile, destination);
           writers.put(destination, writer);
         }
         writeOrClose(writer, getSink().getDynamicDestinations().formatRecord(input));
@@ -524,7 +530,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           writer.close();
         } catch (Exception e) {
           // If anything goes wrong, make sure to delete the temporary file.
-          writer.cleanup();
+          writer.deleteOutputFile();
           throw e;
         }
         if (windowedWrites) {
@@ -552,7 +558,7 @@ public class WriteFiles<UserT, DestinationT, OutputT>
       try {
         writer.close();
         // If anything goes wrong, make sure to delete the temporary file.
-        writer.cleanup();
+        writer.deleteOutputFile();
       } catch (Exception closeException) {
         if (closeException instanceof InterruptedException) {
           // Do not silently ignore interrupted state.
@@ -919,10 +925,13 @@ public class WriteFiles<UserT, DestinationT, OutputT>
           minShardsNeeded,
           destination);
       for (int i = 0; i < extraShardsNeeded; ++i) {
+        ResourceId outputFile =
+            writeOperation.tempDirectory.get().resolve(
+                UUID.randomUUID().toString(), ResolveOptions.StandardResolveOptions.RESOLVE_FILE);
         Writer<DestinationT, OutputT> writer = writeOperation.createWriter();
-        writer.open(UUID.randomUUID().toString(), destination);
+        writer.open(outputFile, destination);
         writer.close();
-        results.add(new FileResult<>(writer.getOutputFile(), UNKNOWN_SHARDNUM, null, null, destination));
+        results.add(new FileResult<>(outputFile, UNKNOWN_SHARDNUM, null, null, destination));
       }
       LOG.debug("Done creating extra shards for {}.", destination);
     }

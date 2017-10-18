@@ -107,8 +107,13 @@ class XmlSink<T> extends FileBasedSink<T, Void, T> {
     private OutputStream os = null;
 
     public XmlWriter(XmlWriteOperation<T> writeOperation, Marshaller marshaller) {
-      super(writeOperation, MimeTypes.TEXT);
+      super(writeOperation);
       this.marshaller = marshaller;
+    }
+
+    @Override
+    protected String getDefaultMimeType() {
+      return MimeTypes.TEXT;
     }
 
     /**

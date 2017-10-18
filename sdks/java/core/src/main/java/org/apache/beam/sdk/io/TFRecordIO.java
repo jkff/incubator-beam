@@ -540,7 +540,12 @@ public class TFRecordIO {
       private TFRecordCodec codec;
 
       private TFRecordWriter(WriteOperation<Void, byte[]> writeOperation) {
-        super(writeOperation, MimeTypes.BINARY);
+        super(writeOperation);
+      }
+
+      @Override
+      protected String getDefaultMimeType() {
+        return MimeTypes.BINARY;
       }
 
       @Override
