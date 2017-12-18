@@ -96,7 +96,7 @@ public class GroupByKeyViaGroupByKeyOnly<K, V>
 
         // And update the windowing strategy as appropriate.
         .setWindowingStrategyInternal(
-            gbkTransform.updateWindowingStrategy(windowingStrategy));
+            gbkTransform.updateWindowingStrategy(input));
   }
 
   /**

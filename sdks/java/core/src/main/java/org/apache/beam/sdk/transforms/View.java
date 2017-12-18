@@ -27,6 +27,7 @@ import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.runners.TransformHierarchy.Node;
+import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
@@ -241,6 +242,19 @@ public class View {
     return new AsMultimap<K, V>();
   }
 
+  private static <T> PCollection<KV<Void, T>> addVoidKeyForMultimapMaterialization(
+      PCollection<T> input) {
+    input = input.apply(Window.<T>configure().discardingFiredPanes());
+
+    try {
+      GroupByKey.applicableTo(input);
+    } catch (IllegalStateException e) {
+      throw new IllegalStateException("Unable to create a side-input view from input", e);
+    }
+
+    return input.apply(new VoidKeyToMultimapMaterialization<T>());
+  }
+
   /**
    * <b><i>For internal use only; no backwards-compatibility guarantees.</i></b>
    *
@@ -254,14 +268,7 @@ public class View {
 
     @Override
     public PCollectionView<List<T>> expand(PCollection<T> input) {
-      try {
-        GroupByKey.applicableTo(input);
-      } catch (IllegalStateException e) {
-        throw new IllegalStateException("Unable to create a side-input view from input", e);
-      }
-
-      PCollection<KV<Void, T>> materializationInput =
-          input.apply(new VoidKeyToMultimapMaterialization<T>());
+      PCollection<KV<Void, T>> materializationInput = addVoidKeyForMultimapMaterialization(input);
       PCollectionView<List<T>> view = PCollectionViews.listView(
           materializationInput,
           materializationInput.getWindowingStrategy());
@@ -285,14 +292,7 @@ public class View {
 
     @Override
     public PCollectionView<Iterable<T>> expand(PCollection<T> input) {
-      try {
-        GroupByKey.applicableTo(input);
-      } catch (IllegalStateException e) {
-        throw new IllegalStateException("Unable to create a side-input view from input", e);
-      }
-
-      PCollection<KV<Void, T>> materializationInput =
-          input.apply(new VoidKeyToMultimapMaterialization<T>());
+      PCollection<KV<Void, T>> materializationInput = addVoidKeyForMultimapMaterialization(input);
       PCollectionView<Iterable<T>> view = PCollectionViews.iterableView(
           materializationInput,
           materializationInput.getWindowingStrategy());
@@ -347,6 +347,8 @@ public class View {
 
     @Override
     public PCollectionView<T> expand(PCollection<T> input) {
+      input = input.apply(Window.<T>configure().discardingFiredPanes());
+
       try {
         GroupByKey.applicableTo(input);
       } catch (IllegalStateException e) {
@@ -432,14 +434,8 @@ public class View {
 
     @Override
     public PCollectionView<Map<K, Iterable<V>>> expand(PCollection<KV<K, V>> input) {
-      try {
-        GroupByKey.applicableTo(input);
-      } catch (IllegalStateException e) {
-        throw new IllegalStateException("Unable to create a side-input view from input", e);
-      }
-
       PCollection<KV<Void, KV<K, V>>> materializationInput =
-          input.apply(new VoidKeyToMultimapMaterialization<KV<K, V>>());
+          addVoidKeyForMultimapMaterialization(input);
       PCollectionView<Map<K, Iterable<V>>> view = PCollectionViews.multimapView(
           materializationInput,
           materializationInput.getWindowingStrategy());
@@ -471,17 +467,11 @@ public class View {
 
     @Override
     public PCollectionView<Map<K, V>> expand(PCollection<KV<K, V>> input) {
-      try {
-        GroupByKey.applicableTo(input);
-      } catch (IllegalStateException e) {
-        throw new IllegalStateException("Unable to create a side-input view from input", e);
-      }
-
       PCollection<KV<Void, KV<K, V>>> materializationInput =
-          input.apply(new VoidKeyToMultimapMaterialization<KV<K, V>>());
-      PCollectionView<Map<K, V>> view = PCollectionViews.mapView(
-          materializationInput,
-          materializationInput.getWindowingStrategy());
+          addVoidKeyForMultimapMaterialization(input);
+      PCollectionView<Map<K, V>> view =
+          PCollectionViews.mapView(
+              materializationInput, materializationInput.getWindowingStrategy());
       materializationInput.apply(
           CreatePCollectionView.<KV<Void, KV<K, V>>, Map<K, V>>of(view));
       return view;

@@ -179,18 +179,46 @@ public class GroupByKey<K, V>
     if (windowingStrategy.getWindowFn() instanceof InvalidWindows) {
       String cause = ((InvalidWindows<?>) windowingStrategy.getWindowFn()).getCause();
       throw new IllegalStateException(
-          "GroupByKey must have a valid Window merge function.  "
-              + "Invalid because: " + cause);
+          "Can not apply GroupByKey to "
+              + input
+              + " because its windowing strategy is invalid: "
+              + cause);
     }
   }
 
-  public WindowingStrategy<?, ?> updateWindowingStrategy(WindowingStrategy<?, ?> inputStrategy) {
+  public WindowingStrategy<?, ?> updateWindowingStrategy(PCollection<?> input) {
+    WindowingStrategy<?, ?> inputStrategy = input.getWindowingStrategy();
     WindowFn<?, ?> inputWindowFn = inputStrategy.getWindowFn();
     if (!inputWindowFn.isNonMerging()) {
       // Prevent merging windows again, without explicit user
       // involvement, e.g., by Window.into() or Window.remerge().
-      inputWindowFn = new InvalidWindows<>(
-          "WindowFn has already been consumed by previous GroupByKey", inputWindowFn);
+      inputWindowFn =
+          new InvalidWindows<>(
+              "The input "
+                  + input
+                  + " uses a merging window strategy "
+                  + inputStrategy
+                  + ", and windows have already been merged by a previous GroupByKey. "
+                  + "Repeated merging of windows is generally unsafe. "
+                  + "Please either re-specify the windowing strategy before the current GroupByKey "
+                  + "using Window.into(), or force re-merging windows using Window.remerge()",
+              inputWindowFn);
+    }
+    if (inputStrategy.getMode() == WindowingStrategy.AccumulationMode.ACCUMULATING_FIRED_PANES) {
+      inputWindowFn =
+          new InvalidWindows<>(
+              "The input "
+                  + input
+                  + " uses a window strategy "
+                  + inputStrategy
+                  + " which specifies accumulation mode ACCUMULATING_FIRED_PANES, "
+                  + "and accumulated firing of the input has already happened at a "
+                  + "previous GroupByKey. "
+                  + "Multi-level triggering in accumulating mode is generally unsafe "
+                  + "and can lead to data duplication. "
+                  + "Please re-specify an appropriate windowing strategy and accumulation mode "
+                  + "before the current GroupByKey using Window.into() or Window.configure()",
+              inputWindowFn);
     }
 
     // We also switch to the continuation trigger associated with the current trigger.
@@ -219,7 +247,7 @@ public class GroupByKey<K, V>
     // window function associated with the input PCollection.
     return PCollection.createPrimitiveOutputInternal(
         input.getPipeline(),
-        updateWindowingStrategy(input.getWindowingStrategy()),
+        updateWindowingStrategy(input),
         input.isBounded(),
         getOutputKvCoder(input.getCoder()));
   }

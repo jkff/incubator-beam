@@ -372,18 +372,30 @@ public class GroupByKeyTest implements Serializable {
   }
 
   @Test
-  public void testInvalidWindowsDirect() {
-
-    List<KV<String, Integer>> ungroupedPairs = Arrays.asList();
-
+  public void testRejectsStackedGBKWithMergingWindows() {
     PCollection<KV<String, Integer>> input =
-        p.apply(Create.of(ungroupedPairs)
-            .withCoder(KvCoder.of(StringUtf8Coder.of(), BigEndianIntegerCoder.of())))
-        .apply(Window.<KV<String, Integer>>into(
-            Sessions.withGapDuration(Duration.standardMinutes(1))));
+        p.apply(Create.empty(KvCoder.of(StringUtf8Coder.of(), BigEndianIntegerCoder.of())))
+            .apply(
+                Window.<KV<String, Integer>>into(
+                    Sessions.withGapDuration(Duration.standardMinutes(1))));
 
     thrown.expect(IllegalStateException.class);
-    thrown.expectMessage("GroupByKey must have a valid Window merge function");
+    thrown.expectMessage("Repeated merging of windows is generally unsafe.");
+    input
+        .apply("GroupByKey", GroupByKey.<String, Integer>create())
+        .apply("GroupByKeyAgain", GroupByKey.<String, Iterable<Integer>>create());
+  }
+
+  @Test
+  public void testRejectsStackedGBKWithAccumulatingMode() {
+    PCollection<KV<String, Integer>> input =
+        p.apply(Create.empty(KvCoder.of(StringUtf8Coder.of(), BigEndianIntegerCoder.of())))
+            .apply(
+                Window.<KV<String, Integer>>into(FixedWindows.of(Duration.standardMinutes(1)))
+                    .accumulatingFiredPanes());
+
+    thrown.expect(IllegalStateException.class);
+    thrown.expectMessage("Multi-level triggering in accumulating mode is generally unsafe");
     input
         .apply("GroupByKey", GroupByKey.<String, Integer>create())
         .apply("GroupByKeyAgain", GroupByKey.<String, Iterable<Integer>>create());

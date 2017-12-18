@@ -145,11 +145,12 @@ public class TestStreamTest implements Serializable {
         .advanceProcessingTime(Duration.standardMinutes(6))
         .advanceWatermarkToInfinity();
 
-    PCollection<Long> sum = p.apply(source)
+    PCollection<Long> windowed = p.apply(source)
         .apply(Window.<Long>configure().triggering(AfterWatermark.pastEndOfWindow()
             .withEarlyFirings(AfterProcessingTime.pastFirstElementInPane()
                 .plusDelayOf(Duration.standardMinutes(5)))).accumulatingFiredPanes()
-            .withAllowedLateness(Duration.ZERO))
+            .withAllowedLateness(Duration.ZERO));
+    PCollection<Long> sum = windowed
         .apply(Sum.longsGlobally());
 
     PAssert.that(sum).inEarlyGlobalWindowPanes().containsInAnyOrder(3L, 6L);
